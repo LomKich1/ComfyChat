@@ -38,6 +38,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     var size by mutableStateOf(SizeOption.WIDE)
         private set
 
+    /** Ключи уже проигранных анимаций появления (чтобы не повторять при скролле). */
+    val animated: MutableSet<String> = mutableSetOf()
+
     private var nextId = 0L
     private var job: Job? = null
     private var activeClient: ComfyClient? = null
@@ -60,9 +63,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Останавливает локально и сразу (не ждём сервер), а interrupt шлём в фоне «по возможности». */
     fun stop() {
-        val c = activeClient ?: return
-        viewModelScope.launch(Dispatchers.IO) { runCatching { c.interrupt() } }
+        val c = activeClient
+        job?.cancel()
+        if (c != null) viewModelScope.launch(Dispatchers.IO) { runCatching { c.interrupt() } }
     }
 
     fun send(raw: String) {
@@ -71,7 +76,18 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val id = nextId++
         val sizeOpt = size
         turns.add(Turn(id = id, prompt = text, size = sizeOpt))
+        startGeneration(id, text, sizeOpt)
+    }
 
+    /** Повтор неудавшейся генерации в том же сообщении. */
+    fun retry(id: Long) {
+        if (job?.isActive == true) return
+        val t = turns.firstOrNull { it.id == id } ?: return
+        update(id) { Turn(id = it.id, prompt = it.prompt, size = it.size) }
+        startGeneration(id, t.prompt, t.size)
+    }
+
+    private fun startGeneration(id: Long, text: String, sizeOpt: SizeOption) {
         job = viewModelScope.launch {
             val client = ComfyClient(settings.url.first())
             activeClient = client
@@ -89,13 +105,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         is GenEvent.Preview -> update(id) { it.copy(preview = ev.bitmap) }
                         is GenEvent.Tags -> update(id) { it.copy(tags = ev.text) }
                         is GenEvent.Done -> {
+                            update(id) { it.copy(stage = "Загружаю картинку…") }
                             val bmp = ev.images.firstOrNull()?.let { client.fetchImage(it) }
                             update(id) {
                                 it.copy(
                                     result = bmp,
-                                    preview = null,
+                                    preview = if (bmp == null) it.preview else null,
                                     running = false,
-                                    error = if (bmp == null) "Картинка не пришла" else null
+                                    error = if (bmp == null) "Не удалось получить картинку" else null
                                 )
                             }
                         }
@@ -103,11 +120,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     }
                 }
             } catch (e: CancellationException) {
-                update(id) { it.copy(running = false) }
+                update(id) { it.copy(running = false, error = it.error ?: "Остановлено") }
                 throw e
             } catch (e: Exception) {
                 update(id) { it.copy(error = e.message ?: e.toString(), running = false) }
             } finally {
+                // что бы ни случилось, интерфейс не должен остаться «в процессе»
                 update(id) { if (it.running) it.copy(running = false) else it }
             }
         }

@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- рамка кадра -->
+    <path
+        android:fillColor="#30302E"
+        android:strokeColor="#A6A39A"
+        android:strokeWidth="2.6"
+        android:pathData="M37,34 H71 A7,7 0 0 1 78,41 V67 A7,7 0 0 1 71,74 H37 A7,7 0 0 1 30,67 V41 A7,7 0 0 1 37,34 Z" />
+    <!-- горы -->
+    <path
+        android:fillColor="#D97757"
+        android:pathData="M35,72 L46,55 L54,66 L61,58 L73,72 Z" />
+    <!-- искра генерации -->
+    <path
+        android:fillColor="#FAF9F5"
+        android:strokeColor="#262624"
+        android:strokeWidth="2.6"
+        android:strokeLineJoin="round"
+        android:pathData="M71,27 C72.8,33.6 75.4,36.2 82,38 C75.4,39.8 72.8,42.4 71,49 C69.2,42.4 66.6,39.8 60,38 C66.6,36.2 69.2,33.6 71,27 Z" />
+</vector>
