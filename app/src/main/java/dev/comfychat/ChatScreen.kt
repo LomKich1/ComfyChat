@@ -306,7 +306,7 @@ fun ChatScreen(vm: ChatViewModel) {
             SizePickerContent(
                 current = vm.size,
                 recent = recent,
-                onPick = { vm.setSize(it); sizeAnchor = null },
+                onPick = { vm.selectSize(it); sizeAnchor = null },
                 onCancel = { sizeAnchor = null }
             )
         }

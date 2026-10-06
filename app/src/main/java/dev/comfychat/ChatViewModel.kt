@@ -94,7 +94,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun setSize(s: Size) {
+    fun selectSize(s: Size) {
         size = s
         viewModelScope.launch {
             settings.setSize(s)
