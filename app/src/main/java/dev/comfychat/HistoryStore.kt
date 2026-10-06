@@ -16,7 +16,7 @@ data class Saved(
     val size: String
 )
 
-/** Картинки лежат в filesDir/history/*.png (оригиналы ComfyUI), список в index.json. */
+/** Картинки лежат в папке history внутри filesDir (оригиналы PNG от ComfyUI), список в index.json. */
 class HistoryStore(ctx: Context) {
     private val dir = File(ctx.filesDir, "history").also { it.mkdirs() }
     private val index = File(dir, "index.json")
