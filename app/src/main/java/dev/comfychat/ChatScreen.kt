@@ -66,6 +66,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -88,6 +89,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlin.random.Random
 
 @Composable
@@ -476,6 +478,10 @@ private fun SettingsDialog(
     var m by remember { mutableStateOf(mode) }
     var fixed by remember { mutableStateOf(seedFixed) }
     var seed by remember { mutableStateOf(seedValue) }
+    val scope = rememberCoroutineScope()
+    val clipboard = LocalClipboardManager.current
+    var searching by remember { mutableStateOf(false) }
+    var findMsg by remember { mutableStateOf<String?>(null) }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Настройки") },
@@ -487,6 +493,29 @@ private fun SettingsDialog(
                     label = { Text("Адрес ComfyUI") },
                     singleLine = true
                 )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(
+                        enabled = !searching,
+                        onClick = {
+                            searching = true
+                            findMsg = null
+                            scope.launch {
+                                val found = LanDiscovery.find(LanDiscovery.portOf(normalizeUrl(u)))
+                                searching = false
+                                if (found != null) {
+                                    u = found
+                                    findMsg = "Нашёл: $found"
+                                } else {
+                                    findMsg = "Не нашёл. Проверь, что ComfyUI запущен с --listen 0.0.0.0, а VPN не режет локалку"
+                                }
+                            }
+                        }
+                    ) { Text(if (searching) "Ищу…" else "Найти ПК в сети") }
+                    TextButton(onClick = {
+                        clipboard.getText()?.text?.trim()?.takeIf { it.isNotEmpty() }?.let { u = it }
+                    }) { Text("Вставить") }
+                }
+                findMsg?.let { Text(it, fontSize = 13.sp) }
                 Text("Тема")
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf(

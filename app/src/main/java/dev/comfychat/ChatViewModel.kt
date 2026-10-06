@@ -157,9 +157,20 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun startGeneration(id: Long, text: String, sizeOpt: SizeOption) {
         job = viewModelScope.launch {
-            val client = ComfyClient(settings.url.first())
-            activeClient = client
+            activeClient = null
             try {
+                var url = settings.url.first()
+                // адрес в локалке мог поменяться (хотспот выдал другой IP): ищем ПК заново
+                if (LanDiscovery.isLanUrl(url) && !LanDiscovery.ping(url)) {
+                    update(id) { it.copy(stage = "Ищу ПК в сети…") }
+                    LanDiscovery.find(LanDiscovery.portOf(url))?.let { found ->
+                        url = found
+                        settings.setUrl(found)
+                    }
+                    update(id) { it.copy(stage = "Отправляю…") }
+                }
+                val client = ComfyClient(url)
+                activeClient = client
                 val fixed = settings.seedFixed.first()
                 val fixedSeed = settings.seed.first().toLongOrNull()
                 val seed = if (fixed && fixedSeed != null) fixedSeed else Random.nextLong() ushr 14
