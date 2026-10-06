@@ -22,6 +22,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -54,6 +56,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -99,6 +102,7 @@ fun ChatScreen(vm: ChatViewModel) {
     val mode by vm.themeMode.collectAsStateWithLifecycle()
     val seedFixed by vm.seedFixed.collectAsStateWithLifecycle()
     val seedValue by vm.seedValue.collectAsStateWithLifecycle()
+    val ckpt by vm.ckpt.collectAsStateWithLifecycle()
     val running = vm.turns.lastOrNull()?.running == true
     var input by remember { mutableStateOf("") }
     var showSettings by remember { mutableStateOf(false) }
@@ -269,8 +273,10 @@ fun ChatScreen(vm: ChatViewModel) {
             mode = mode,
             seedFixed = seedFixed,
             seedValue = seedValue,
-            onSave = { u, m, f, sd ->
-                vm.saveSettings(u, m, f, sd)
+            ckpt = ckpt,
+            scan = { vm.scanCheckpoints(it) },
+            onSave = { u, m, f, sd, ck ->
+                vm.saveSettings(u, m, f, sd, ck)
                 showSettings = false
             },
             onDismiss = { showSettings = false }
@@ -471,7 +477,9 @@ private fun SettingsDialog(
     mode: ThemeMode,
     seedFixed: Boolean,
     seedValue: String,
-    onSave: (String, ThemeMode, Boolean, String) -> Unit,
+    ckpt: String,
+    scan: suspend (String) -> List<String>?,
+    onSave: (String, ThemeMode, Boolean, String, String) -> Unit,
     onDismiss: () -> Unit
 ) {
     var u by remember { mutableStateOf(url) }
@@ -480,13 +488,21 @@ private fun SettingsDialog(
     var seed by remember { mutableStateOf(seedValue) }
     val scope = rememberCoroutineScope()
     val clipboard = LocalClipboardManager.current
+    var model by remember { mutableStateOf(ckpt) }
+    var models by remember { mutableStateOf<List<String>>(emptyList()) }
+    var scanning by remember { mutableStateOf(false) }
+    var menuOpen by remember { mutableStateOf(false) }
+    var scanErr by remember { mutableStateOf<String?>(null) }
     var searching by remember { mutableStateOf(false) }
     var findMsg by remember { mutableStateOf<String?>(null) }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Настройки") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
                 OutlinedTextField(
                     value = u,
                     onValueChange = { u = it },
@@ -516,6 +532,48 @@ private fun SettingsDialog(
                     }) { Text("Вставить") }
                 }
                 findMsg?.let { Text(it, fontSize = 13.sp) }
+                Text("Модель (чекпоинт)")
+                Box {
+                    OutlinedButton(
+                        enabled = !scanning,
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = {
+                            scanning = true
+                            scanErr = null
+                            scope.launch {
+                                val list = scan(normalizeUrl(u))
+                                scanning = false
+                                when {
+                                    list == null -> scanErr = "Не достучался до ComfyUI, проверь адрес"
+                                    list.isEmpty() -> scanErr = "Моделей на сервере не нашёл"
+                                    else -> {
+                                        models = list
+                                        menuOpen = true
+                                    }
+                                }
+                            }
+                        }
+                    ) {
+                        Text(
+                            if (scanning) "Сканирую…" else model.ifEmpty { "Как в workflow" },
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                        DropdownMenuItem(
+                            text = { Text("Как в workflow") },
+                            onClick = { model = ""; menuOpen = false }
+                        )
+                        models.forEach { name ->
+                            DropdownMenuItem(
+                                text = { Text(name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                                onClick = { model = name; menuOpen = false }
+                            )
+                        }
+                    }
+                }
+                scanErr?.let { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 13.sp) }
                 Text("Тема")
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf(
@@ -548,7 +606,7 @@ private fun SettingsDialog(
         confirmButton = {
             TextButton(onClick = {
                 val s = if (fixed && seed.isBlank()) Random.nextLong(0L, 1L shl 50).toString() else seed
-                onSave(u, m, fixed, s)
+                onSave(u, m, fixed, s, model)
             }) { Text("Сохранить") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } }

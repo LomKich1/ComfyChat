@@ -38,6 +38,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     val serverUrl = settings.url.stateIn(viewModelScope, SharingStarted.Eagerly, "")
     val themeMode = settings.theme.stateIn(viewModelScope, SharingStarted.Eagerly, ThemeMode.AUTO)
+    val ckpt = settings.ckpt.stateIn(viewModelScope, SharingStarted.Eagerly, "")
     val seedFixed = settings.seedFixed.stateIn(viewModelScope, SharingStarted.Eagerly, false)
     val seedValue = settings.seed.stateIn(viewModelScope, SharingStarted.Eagerly, "")
 
@@ -88,8 +89,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         size = all[(size.ordinal + 1) % all.size]
     }
 
-    fun saveSettings(url: String, mode: ThemeMode, seedFixed: Boolean, seed: String) {
+    /** Список чекпоинтов с сервера по указанному адресу; null, если не достучались. */
+    suspend fun scanCheckpoints(url: String): List<String>? = withContext(Dispatchers.IO) {
+        runCatching { ComfyClient(url).listCheckpoints().sortedBy { it.lowercase() } }.getOrNull()
+    }
+
+    fun saveSettings(url: String, mode: ThemeMode, seedFixed: Boolean, seed: String, ckpt: String) {
         viewModelScope.launch {
+            settings.setCkpt(ckpt)
             settings.setUrl(url)
             settings.setTheme(mode)
             settings.setSeed(seedFixed, seed)
@@ -174,11 +181,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 val fixed = settings.seedFixed.first()
                 val fixedSeed = settings.seed.first().toLongOrNull()
                 val seed = if (fixed && fixedSeed != null) fixedSeed else Random.nextLong() ushr 14
-                val wf = template
+                var wf = template
                     .patch(Wf.PROMPT, "value", JsonPrimitive(text))
                     .patch(Wf.SAMPLER, "seed", JsonPrimitive(seed))
                     .patch(Wf.LATENT, "width", JsonPrimitive(sizeOpt.w))
                     .patch(Wf.LATENT, "height", JsonPrimitive(sizeOpt.h))
+                val ck = settings.ckpt.first()
+                if (ck.isNotBlank()) wf = wf.patch(Wf.CHECKPOINT, "ckpt_name", JsonPrimitive(ck))
 
                 client.generate(wf).collect { ev ->
                     when (ev) {

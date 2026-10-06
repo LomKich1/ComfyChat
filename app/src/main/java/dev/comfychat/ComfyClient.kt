@@ -371,6 +371,26 @@ class ComfyClient(private val baseUrl: String) {
         null
     }
 
+    /** Чекпоинты, которые видит сервер. Блокирующий вызов, дёргать из IO. */
+    fun listCheckpoints(): List<String> {
+        val body = rest.newCall(Request.Builder().url("$baseUrl/object_info/CheckpointLoaderSimple").build())
+            .execute().use { r ->
+                if (!r.isSuccessful) throw IOException("HTTP ${r.code}")
+                r.body?.string().orEmpty()
+            }
+        val field = json.parseToJsonElement(body).jsonObject["CheckpointLoaderSimple"]?.jsonObject
+            ?.get("input")?.jsonObject?.get("required")?.jsonObject?.get("ckpt_name") as? JsonArray
+            ?: return emptyList()
+        val first = field.firstOrNull()
+        // старый формат: [[имена], {...}], новый: ["COMBO", {"options": [имена]}]
+        val list = when {
+            first is JsonArray -> first
+            first?.jsonPrimitive?.contentOrNull == "COMBO" -> (field.getOrNull(1) as? JsonObject)?.get("options") as? JsonArray
+            else -> null
+        }
+        return list?.mapNotNull { it.jsonPrimitive.contentOrNull }.orEmpty()
+    }
+
     /** Блокирующий вызов, дёргать из IO. Таймаут 30 с, так что зависнуть надолго не может. */
     fun interrupt() {
         rest.newCall(Request.Builder().url("$baseUrl/interrupt").post("".toRequestBody()).build())

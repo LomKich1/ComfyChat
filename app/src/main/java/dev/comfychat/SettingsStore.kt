@@ -32,6 +32,7 @@ class SettingsStore(private val ctx: Context) {
     private val themeKey = stringPreferencesKey("theme")
     private val seedFixedKey = booleanPreferencesKey("seed_fixed")
     private val seedKey = stringPreferencesKey("seed")
+    private val ckptKey = stringPreferencesKey("ckpt")
 
     val url: Flow<String> = ctx.dataStore.data.map { it[urlKey] ?: "http://192.168.0.10:8188" }
 
@@ -39,11 +40,18 @@ class SettingsStore(private val ctx: Context) {
         runCatching { ThemeMode.valueOf(it[themeKey] ?: "") }.getOrDefault(ThemeMode.AUTO)
     }
 
+    /** Пустая строка: оставить модель, прописанную в workflow.json. */
+    val ckpt: Flow<String> = ctx.dataStore.data.map { it[ckptKey] ?: "" }
+
     val seedFixed: Flow<Boolean> = ctx.dataStore.data.map { it[seedFixedKey] ?: false }
     val seed: Flow<String> = ctx.dataStore.data.map { it[seedKey] ?: "" }
 
     suspend fun setUrl(v: String) {
         ctx.dataStore.edit { it[urlKey] = normalizeUrl(v) }
+    }
+
+    suspend fun setCkpt(v: String) {
+        ctx.dataStore.edit { it[ckptKey] = v }
     }
 
     suspend fun setTheme(m: ThemeMode) {
