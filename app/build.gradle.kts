@@ -15,9 +15,32 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.1"
+        resourceConfigurations += listOf("ru", "en")
+    }
+    // Подпись релиза: если в окружении есть ключ (секреты GitHub), берём его, иначе подписываем
+    // отладочным ключом, чтобы APK всё равно ставился.
+    val keystorePath = System.getenv("KEYSTORE_PATH")
+    val hasKeystore = keystorePath != null && file(keystorePath).exists()
+    signingConfigs {
+        if (hasKeystore) {
+            create("release") {
+                storeFile = file(keystorePath!!)
+                storePassword = System.getenv("KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("KEY_ALIAS")
+                keyPassword = System.getenv("KEY_PASSWORD")
+            }
+        }
     }
     buildTypes {
-        release { isMinifyEnabled = false }
+        release {
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            signingConfig = signingConfigs.getByName(if (hasKeystore) "release" else "debug")
+        }
+    }
+    packaging {
+        resources.excludes += setOf("/META-INF/{AL2.0,LGPL2.1}", "/META-INF/*.version", "/kotlin/**", "/DebugProbesKt.bin")
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

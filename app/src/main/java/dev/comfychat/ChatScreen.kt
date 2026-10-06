@@ -104,6 +104,7 @@ import kotlin.random.Random
 fun ChatScreen(vm: ChatViewModel) {
     val cs = MaterialTheme.colorScheme
     val url by vm.serverUrl.collectAsStateWithLifecycle()
+    val tunnel by vm.tunnel.collectAsStateWithLifecycle()
     val mode by vm.themeMode.collectAsStateWithLifecycle()
     val seedFixed by vm.seedFixed.collectAsStateWithLifecycle()
     val seedValue by vm.seedValue.collectAsStateWithLifecycle()
@@ -121,7 +122,8 @@ fun ChatScreen(vm: ChatViewModel) {
     var scanJob by remember { mutableStateOf<Job?>(null) }
     val running = vm.turns.lastOrNull()?.running == true
     var input by remember { mutableStateOf("") }
-    var showSettings by remember { mutableStateOf(false) }
+    var settingsAnchor by remember { mutableStateOf<Rect?>(null) }
+    val settingsRect = remember { RectHolder() }
     var showGallery by remember { mutableStateOf(false) }
     var viewingId by remember { mutableStateOf<Long?>(null) }
     var confirmDeleteId by remember { mutableStateOf<Long?>(null) }
@@ -159,7 +161,10 @@ fun ChatScreen(vm: ChatViewModel) {
                 }
                 Text("ComfyChat", style = MaterialTheme.typography.titleLarge, color = cs.onBackground)
                 Spacer(Modifier.weight(1f))
-                IconButton(onClick = { showSettings = true }) {
+                IconButton(
+                    onClick = { settingsAnchor = settingsRect.r },
+                    modifier = Modifier.onGloballyPositioned { settingsRect.r = it.boundsInRoot() }
+                ) {
                     Icon(Icons.Filled.Settings, contentDescription = "Настройки", tint = cs.onSurfaceVariant)
                 }
             }
@@ -227,7 +232,7 @@ fun ChatScreen(vm: ChatViewModel) {
                                 scanning = true
                                 scanJob?.cancel()
                                 scanJob = scope.launch {
-                                    val list = vm.scanCheckpoints(url)
+                                    val list = vm.scanCheckpoints()
                                     scanning = false
                                     when {
                                         list == null -> scanErr = "Не достучался до ComfyUI"
@@ -295,6 +300,29 @@ fun ChatScreen(vm: ChatViewModel) {
         }
 
         MorphPopup(
+            anchor = settingsAnchor,
+            placement = MorphPlacement.CENTER,
+            color = cs.surfaceContainerHigh,
+            startRadius = 24.dp,
+            endRadius = 28.dp,
+            scrimAlpha = 0.35f,
+            onDismiss = { settingsAnchor = null }
+        ) {
+            SettingsContent(
+                url = url,
+                tunnel = tunnel,
+                mode = mode,
+                seedFixed = seedFixed,
+                seedValue = seedValue,
+                onSave = { u, t, m, f, sd ->
+                    vm.saveSettings(u, t, m, f, sd)
+                    settingsAnchor = null
+                },
+                onDismiss = { settingsAnchor = null }
+            )
+        }
+
+        MorphPopup(
             anchor = sizeAnchor,
             placement = MorphPlacement.CENTER,
             color = cs.surfaceContainerHigh,
@@ -349,20 +377,6 @@ fun ChatScreen(vm: ChatViewModel) {
                 }) { Text("Удалить", color = cs.error) }
             },
             dismissButton = { TextButton(onClick = { confirmDeleteId = null }) { Text("Отмена") } }
-        )
-    }
-
-    if (showSettings) {
-        SettingsDialog(
-            url = url,
-            mode = mode,
-            seedFixed = seedFixed,
-            seedValue = seedValue,
-            onSave = { u, m, f, sd ->
-                vm.saveSettings(u, m, f, sd)
-                showSettings = false
-            },
-            onDismiss = { showSettings = false }
         )
     }
 }
@@ -555,15 +569,18 @@ private fun ImageCard(t: Turn, onOpen: (Long) -> Unit) {
 }
 
 @Composable
-private fun SettingsDialog(
+private fun SettingsContent(
     url: String,
+    tunnel: String,
     mode: ThemeMode,
     seedFixed: Boolean,
     seedValue: String,
-    onSave: (String, ThemeMode, Boolean, String) -> Unit,
+    onSave: (String, String, ThemeMode, Boolean, String) -> Unit,
     onDismiss: () -> Unit
 ) {
+    val cs = MaterialTheme.colorScheme
     var u by remember { mutableStateOf(url) }
+    var tun by remember { mutableStateOf(tunnel) }
     var m by remember { mutableStateOf(mode) }
     var fixed by remember { mutableStateOf(seedFixed) }
     var seed by remember { mutableStateOf(seedValue) }
@@ -571,78 +588,89 @@ private fun SettingsDialog(
     val clipboard = LocalClipboardManager.current
     var searching by remember { mutableStateOf(false) }
     var findMsg by remember { mutableStateOf<String?>(null) }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Настройки") },
-        text = {
-            Column(
-                modifier = Modifier.verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                OutlinedTextField(
-                    value = u,
-                    onValueChange = { u = it },
-                    label = { Text("Адрес ComfyUI") },
-                    singleLine = true
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(
-                        enabled = !searching,
-                        onClick = {
-                            searching = true
-                            findMsg = null
-                            scope.launch {
-                                val found = LanDiscovery.find(LanDiscovery.portOf(normalizeUrl(u)))
-                                searching = false
-                                if (found != null) {
-                                    u = found
-                                    findMsg = "Нашёл: $found"
-                                } else {
-                                    findMsg = "Не нашёл. Проверь, что ComfyUI запущен с --listen 0.0.0.0, а VPN не режет локалку"
-                                }
+
+    Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(24.dp)) {
+        Text("Настройки", style = MaterialTheme.typography.headlineSmall, color = cs.onSurface)
+        Spacer(Modifier.height(16.dp))
+        Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            OutlinedTextField(
+                value = u,
+                onValueChange = { u = it },
+                label = { Text("Адрес ComfyUI (дома)") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                TextButton(
+                    enabled = !searching,
+                    onClick = {
+                        searching = true
+                        findMsg = null
+                        scope.launch {
+                            val found = LanDiscovery.find(LanDiscovery.portOf(normalizeUrl(u)))
+                            searching = false
+                            if (found != null) {
+                                u = found
+                                findMsg = "Нашёл: $found"
+                            } else {
+                                findMsg = "Не нашёл. Проверь, что ComfyUI запущен с --listen 0.0.0.0, а VPN не режет локалку"
                             }
                         }
-                    ) { Text(if (searching) "Ищу…" else "Найти ПК в сети") }
+                    }
+                ) { Text(if (searching) "Ищу…" else "Найти ПК в сети") }
+                TextButton(onClick = {
+                    clipboard.getText()?.text?.trim()?.takeIf { it.isNotEmpty() }?.let { u = it }
+                }) { Text("Вставить") }
+            }
+            findMsg?.let { Text(it, fontSize = 13.sp, color = cs.onSurfaceVariant) }
+            OutlinedTextField(
+                value = tun,
+                onValueChange = { tun = it },
+                label = { Text("Туннель (вне дома)") },
+                placeholder = { Text("https://….trycloudflare.com") },
+                supportingText = { Text("Используется, если ПК не нашёлся в локалке") },
+                singleLine = true,
+                trailingIcon = {
                     TextButton(onClick = {
-                        clipboard.getText()?.text?.trim()?.takeIf { it.isNotEmpty() }?.let { u = it }
+                        clipboard.getText()?.text?.trim()?.takeIf { it.isNotEmpty() }?.let { tun = it }
                     }) { Text("Вставить") }
-                }
-                findMsg?.let { Text(it, fontSize = 13.sp) }
-                Text("Тема")
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf(
-                        ThemeMode.AUTO to "Авто",
-                        ThemeMode.LIGHT to "Светлая",
-                        ThemeMode.DARK to "Тёмная"
-                    ).forEach { (k, label) ->
-                        FilterChip(selected = m == k, onClick = { m = k }, label = { Text(label) })
-                    }
-                }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Фиксированный сид", modifier = Modifier.weight(1f))
-                    Switch(checked = fixed, onCheckedChange = { fixed = it })
-                }
-                if (fixed) {
-                    OutlinedTextField(
-                        value = seed,
-                        onValueChange = { v -> seed = v.filter { it.isDigit() }.take(18) },
-                        label = { Text("Сид") },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    TextButton(onClick = { seed = Random.nextLong(0L, 1L shl 50).toString() }) {
-                        Text("Случайный")
-                    }
+                },
+                modifier = Modifier.fillMaxWidth()
+            )
+            Text("Тема", color = cs.onSurface)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(
+                    ThemeMode.AUTO to "Авто",
+                    ThemeMode.LIGHT to "Светлая",
+                    ThemeMode.DARK to "Тёмная"
+                ).forEach { (k, label) ->
+                    FilterChip(selected = m == k, onClick = { m = k }, label = { Text(label) })
                 }
             }
-        },
-        confirmButton = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Фиксированный сид", color = cs.onSurface, modifier = Modifier.weight(1f))
+                Switch(checked = fixed, onCheckedChange = { fixed = it })
+            }
+            if (fixed) {
+                OutlinedTextField(
+                    value = seed,
+                    onValueChange = { v -> seed = v.filter { it.isDigit() }.take(18) },
+                    label = { Text("Сид") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                TextButton(onClick = { seed = Random.nextLong(0L, 1L shl 50).toString() }) {
+                    Text("Случайный")
+                }
+            }
+        }
+        Row(Modifier.fillMaxWidth().padding(top = 16.dp), horizontalArrangement = Arrangement.End) {
+            TextButton(onClick = onDismiss) { Text("Отмена") }
             TextButton(onClick = {
                 val s = if (fixed && seed.isBlank()) Random.nextLong(0L, 1L shl 50).toString() else seed
-                onSave(u, m, fixed, s)
+                onSave(u, tun, m, fixed, s)
             }) { Text("Сохранить") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } }
-    )
+        }
+    }
 }

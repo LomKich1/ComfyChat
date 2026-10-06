@@ -32,11 +32,15 @@ class SettingsStore(private val ctx: Context) {
     private val themeKey = stringPreferencesKey("theme")
     private val seedFixedKey = booleanPreferencesKey("seed_fixed")
     private val seedKey = stringPreferencesKey("seed")
+    private val tunnelKey = stringPreferencesKey("tunnel")
     private val ckptKey = stringPreferencesKey("ckpt")
     private val sizeKey = stringPreferencesKey("size")
     private val sizesKey = stringPreferencesKey("recent_sizes")
 
     val url: Flow<String> = ctx.dataStore.data.map { it[urlKey] ?: "http://192.168.0.10:8188" }
+
+    /** Адрес для доступа из интернета (Cloudflare Tunnel и т. п.); пусто = не используется. */
+    val tunnel: Flow<String> = ctx.dataStore.data.map { it[tunnelKey] ?: "" }
 
     val theme: Flow<ThemeMode> = ctx.dataStore.data.map {
         runCatching { ThemeMode.valueOf(it[themeKey] ?: "") }.getOrDefault(ThemeMode.AUTO)
@@ -68,6 +72,10 @@ class SettingsStore(private val ctx: Context) {
             val cur = (p[sizesKey] ?: "").split(';').mapNotNull { Size.parse(it) }
             p[sizesKey] = (listOf(v) + cur.filter { it != v }).take(4).joinToString(";") { it.key }
         }
+    }
+
+    suspend fun setTunnel(v: String) {
+        ctx.dataStore.edit { it[tunnelKey] = normalizeUrl(v) }
     }
 
     suspend fun setCkpt(v: String) {

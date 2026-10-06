@@ -39,6 +39,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     val serverUrl = settings.url.stateIn(viewModelScope, SharingStarted.Eagerly, "")
     val themeMode = settings.theme.stateIn(viewModelScope, SharingStarted.Eagerly, ThemeMode.AUTO)
+    val tunnel = settings.tunnel.stateIn(viewModelScope, SharingStarted.Eagerly, "")
     val ckpt = settings.ckpt.stateIn(viewModelScope, SharingStarted.Eagerly, "")
     val seedFixed = settings.seedFixed.stateIn(viewModelScope, SharingStarted.Eagerly, false)
     val seedValue = settings.seed.stateIn(viewModelScope, SharingStarted.Eagerly, "")
@@ -106,14 +107,22 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { settings.setCkpt(name) }
     }
 
-    /** Список чекпоинтов с сервера по указанному адресу; null, если не достучались. */
-    suspend fun scanCheckpoints(url: String): List<String>? = withContext(Dispatchers.IO) {
-        runCatching { ComfyClient(url).listCheckpoints().sortedBy { it.lowercase() } }.getOrNull()
+    /** Список чекпоинтов: сначала с основного адреса, потом через туннель; null, если никто не ответил. */
+    suspend fun scanCheckpoints(): List<String>? {
+        val urls = listOf(settings.url.first(), settings.tunnel.first()).filter { it.isNotBlank() }.distinct()
+        return withContext(Dispatchers.IO) {
+            for (u in urls) {
+                val list = runCatching { ComfyClient(u).listCheckpoints().sortedBy { it.lowercase() } }.getOrNull()
+                if (list != null) return@withContext list
+            }
+            null
+        }
     }
 
-    fun saveSettings(url: String, mode: ThemeMode, seedFixed: Boolean, seed: String) {
+    fun saveSettings(url: String, tunnel: String, mode: ThemeMode, seedFixed: Boolean, seed: String) {
         viewModelScope.launch {
             settings.setUrl(url)
+            settings.setTunnel(tunnel)
             settings.setTheme(mode)
             settings.setSeed(seedFixed, seed)
         }
@@ -186,9 +195,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 // адрес в локалке мог поменяться (хотспот выдал другой IP): ищем ПК заново
                 if (LanDiscovery.isLanUrl(url) && !LanDiscovery.ping(url)) {
                     update(id) { it.copy(stage = "Ищу ПК в сети…") }
-                    LanDiscovery.find(LanDiscovery.portOf(url))?.let { found ->
+                    val found = LanDiscovery.find(LanDiscovery.portOf(url))
+                    if (found != null) {
                         url = found
                         settings.setUrl(found)
+                    } else {
+                        // ПК не в локалке: пробуем туннель
+                        val tun = settings.tunnel.first()
+                        if (tun.isNotBlank() && LanDiscovery.ping(tun)) url = tun
                     }
                     update(id) { it.copy(stage = "Отправляю…") }
                 }

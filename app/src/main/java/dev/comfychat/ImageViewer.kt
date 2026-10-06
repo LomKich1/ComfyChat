@@ -1,5 +1,12 @@
 package dev.comfychat
 
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
+import androidx.compose.ui.util.lerp
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.Animatable
 import android.os.Build
 import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
@@ -71,6 +78,8 @@ fun ImageViewer(turn: Turn, onDismiss: () -> Unit, onDelete: () -> Unit) {
         var offset by remember { mutableStateOf(Offset.Zero) }
         var box by remember { mutableStateOf(IntSize.Zero) }
         var chrome by remember { mutableStateOf(true) }
+        val scope = rememberCoroutineScope()
+        var zoomJob by remember { mutableStateOf<Job?>(null) }
         val img = remember(bitmap) { bitmap?.asImageBitmap() }
 
         fun clamp(o: Offset, s: Float): Offset {
@@ -88,19 +97,33 @@ fun ImageViewer(turn: Turn, onDismiss: () -> Unit, onDelete: () -> Unit) {
                     detectTapGestures(
                         onTap = { chrome = !chrome },
                         onDoubleTap = { tap ->
-                            if (scale > 1f) {
-                                scale = 1f
-                                offset = Offset.Zero
+                            val s0 = scale
+                            val o0 = offset
+                            val s1: Float
+                            val o1: Offset
+                            if (s0 > 1f) {
+                                s1 = 1f
+                                o1 = Offset.Zero
                             } else {
                                 val c = Offset(box.width / 2f, box.height / 2f)
-                                scale = DOUBLE_TAP_SCALE
-                                offset = clamp((c - tap) * (DOUBLE_TAP_SCALE - 1f), DOUBLE_TAP_SCALE)
+                                s1 = DOUBLE_TAP_SCALE
+                                o1 = clamp((c - tap) * (DOUBLE_TAP_SCALE - 1f), DOUBLE_TAP_SCALE)
+                            }
+                            // плавно ведём масштаб и сдвиг; на промежуточных кадрах сдвиг остаётся в границах,
+                            // потому что границы линейно зависят от масштаба
+                            zoomJob?.cancel()
+                            zoomJob = scope.launch {
+                                Animatable(0f).animateTo(1f, tween(300, easing = FastOutSlowInEasing)) {
+                                    scale = lerp(s0, s1, value)
+                                    offset = Offset(lerp(o0.x, o1.x, value), lerp(o0.y, o1.y, value))
+                                }
                             }
                         }
                     )
                 }
                 .pointerInput(Unit) {
                     detectTransformGestures { centroid, pan, zoom, _ ->
+                        zoomJob?.cancel()
                         val newScale = (scale * zoom).coerceIn(1f, MAX_SCALE)
                         val c = Offset(box.width / 2f, box.height / 2f)
                         val rel = centroid - c
