@@ -14,6 +14,9 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -30,9 +33,13 @@ private fun JsonObject.patch(node: String, input: String, value: JsonElement): J
 
 class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private val settings = SettingsStore(app)
+    private val store = HistoryStore(app)
+    private val saveLock = Mutex()
 
     val serverUrl = settings.url.stateIn(viewModelScope, SharingStarted.Eagerly, "")
     val themeMode = settings.theme.stateIn(viewModelScope, SharingStarted.Eagerly, ThemeMode.AUTO)
+    val seedFixed = settings.seedFixed.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+    val seedValue = settings.seed.stateIn(viewModelScope, SharingStarted.Eagerly, "")
 
     val turns = mutableStateListOf<Turn>()
     var size by mutableStateOf(SizeOption.WIDE)
@@ -41,7 +48,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** Ключи уже проигранных анимаций появления (чтобы не повторять при скролле). */
     val animated: MutableSet<String> = mutableSetOf()
 
-    private var nextId = 0L
+    // id по времени: уникальны и не пересекаются с восстановленными из истории
+    private var nextId = System.currentTimeMillis()
     private var job: Job? = null
     private var activeClient: ComfyClient? = null
 
@@ -51,15 +59,40 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    init {
+        viewModelScope.launch {
+            val items = withContext(Dispatchers.IO) { store.load() }
+            val restored = items.mapNotNull { s ->
+                val f = store.fileOf(s.file)
+                if (!f.exists()) null else Turn(
+                    id = s.id,
+                    prompt = s.prompt,
+                    size = SizeOption.entries.firstOrNull { it.name == s.size } ?: SizeOption.WIDE,
+                    stage = "",
+                    tags = s.tags,
+                    file = f,
+                    running = false
+                )
+            }
+            restored.forEach {
+                animated.add("u${it.id}")
+                animated.add("b${it.id}")
+            }
+            turns.addAll(0, restored)
+            nextId = maxOf(nextId, (restored.maxOfOrNull { it.id } ?: 0L) + 1)
+        }
+    }
+
     fun cycleSize() {
         val all = SizeOption.entries
         size = all[(size.ordinal + 1) % all.size]
     }
 
-    fun saveSettings(url: String, mode: ThemeMode) {
+    fun saveSettings(url: String, mode: ThemeMode, seedFixed: Boolean, seed: String) {
         viewModelScope.launch {
             settings.setUrl(url)
             settings.setTheme(mode)
+            settings.setSeed(seedFixed, seed)
         }
     }
 
@@ -87,14 +120,52 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         startGeneration(id, t.prompt, t.size)
     }
 
+    /** Удаляет сообщение вместе с картинкой (и из галереи, и с диска). */
+    fun delete(id: Long) {
+        if (removeTurn(id)) persist()
+    }
+
+    fun deleteMany(ids: Set<Long>) {
+        var changed = false
+        ids.forEach { if (removeTurn(it)) changed = true }
+        if (changed) persist()
+    }
+
+    private fun removeTurn(id: Long): Boolean {
+        val i = turns.indexOfFirst { it.id == id }
+        if (i < 0) return false
+        val t = turns[i]
+        if (t.running) stop()
+        turns.removeAt(i)
+        animated.remove("u$id")
+        animated.remove("b$id")
+        t.file?.let { f ->
+            Thumbs.evict(f.name)
+            viewModelScope.launch(Dispatchers.IO) { f.delete() }
+        }
+        return true
+    }
+
+    private fun persist() {
+        val snapshot = turns.mapNotNull { t ->
+            t.file?.let { Saved(t.id, t.prompt, t.tags, it.name, t.size.name) }
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            saveLock.withLock { runCatching { store.save(snapshot) } }
+        }
+    }
+
     private fun startGeneration(id: Long, text: String, sizeOpt: SizeOption) {
         job = viewModelScope.launch {
             val client = ComfyClient(settings.url.first())
             activeClient = client
             try {
+                val fixed = settings.seedFixed.first()
+                val fixedSeed = settings.seed.first().toLongOrNull()
+                val seed = if (fixed && fixedSeed != null) fixedSeed else Random.nextLong() ushr 14
                 val wf = template
                     .patch(Wf.PROMPT, "value", JsonPrimitive(text))
-                    .patch(Wf.SAMPLER, "seed", JsonPrimitive(Random.nextLong() ushr 14))
+                    .patch(Wf.SAMPLER, "seed", JsonPrimitive(seed))
                     .patch(Wf.LATENT, "width", JsonPrimitive(sizeOpt.w))
                     .patch(Wf.LATENT, "height", JsonPrimitive(sizeOpt.h))
 
@@ -106,15 +177,22 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         is GenEvent.Tags -> update(id) { it.copy(tags = ev.text) }
                         is GenEvent.Done -> {
                             update(id) { it.copy(stage = "Загружаю картинку…") }
-                            val bmp = ev.images.firstOrNull()?.let { client.fetchImage(it) }
+                            val bytes = ev.images.firstOrNull()?.let { client.fetchImageBytes(it) }
+                            val file = bytes?.let {
+                                withContext(Dispatchers.IO) {
+                                    // сохраняем оригинал и сразу прогреваем кэш, чтобы не мигало
+                                    store.write(it).also { f -> Thumbs.load(f, 1280) }
+                                }
+                            }
                             update(id) {
                                 it.copy(
-                                    result = bmp,
-                                    preview = if (bmp == null) it.preview else null,
+                                    file = file,
+                                    preview = if (file == null) it.preview else null,
                                     running = false,
-                                    error = if (bmp == null) "Не удалось получить картинку" else null
+                                    error = if (file == null) "Не удалось получить картинку" else null
                                 )
                             }
+                            if (file != null) persist()
                         }
                         is GenEvent.Failed -> update(id) { it.copy(error = ev.message, running = false) }
                     }

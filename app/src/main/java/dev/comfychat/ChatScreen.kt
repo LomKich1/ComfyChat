@@ -1,12 +1,20 @@
 package dev.comfychat
 
-import android.graphics.Bitmap
 import android.os.Build
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -25,6 +33,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -33,6 +42,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
@@ -46,6 +56,7 @@ import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
@@ -71,122 +82,193 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.delay
+import kotlin.random.Random
 
 @Composable
 fun ChatScreen(vm: ChatViewModel) {
     val cs = MaterialTheme.colorScheme
     val url by vm.serverUrl.collectAsStateWithLifecycle()
     val mode by vm.themeMode.collectAsStateWithLifecycle()
+    val seedFixed by vm.seedFixed.collectAsStateWithLifecycle()
+    val seedValue by vm.seedValue.collectAsStateWithLifecycle()
     val running = vm.turns.lastOrNull()?.running == true
     var input by remember { mutableStateOf("") }
     var showSettings by remember { mutableStateOf(false) }
-    var viewing by remember { mutableStateOf<Bitmap?>(null) }
+    var showGallery by remember { mutableStateOf(false) }
+    var viewingId by remember { mutableStateOf<Long?>(null) }
+    var confirmDeleteId by remember { mutableStateOf<Long?>(null) }
     val listState = rememberLazyListState()
+
+    // главный экран слегка уезжает вправо, пока галерея наезжает слева
+    val shift by animateFloatAsState(
+        targetValue = if (showGallery) 1f else 0f,
+        animationSpec = tween(380, easing = FastOutSlowInEasing),
+        label = "shift"
+    )
+
+    BackHandler(enabled = showGallery) { showGallery = false }
 
     LaunchedEffect(vm.turns.size) {
         if (vm.turns.isNotEmpty()) listState.animateScrollToItem(vm.turns.lastIndex)
     }
 
-    Column(
-        Modifier
-            .fillMaxSize()
-            .background(cs.background)
-            .systemBarsPadding()
-            .imePadding()
-    ) {
-        Row(
+    Box(Modifier.fillMaxSize().background(cs.background)) {
+        Column(
             Modifier
-                .fillMaxWidth()
-                .padding(start = 20.dp, end = 8.dp, top = 8.dp, bottom = 4.dp),
-            verticalAlignment = Alignment.CenterVertically
+                .fillMaxSize()
+                .graphicsLayer { translationX = shift * size.width * 0.12f }
+                .systemBarsPadding()
+                .imePadding()
         ) {
-            Text("ComfyChat", style = MaterialTheme.typography.titleLarge, color = cs.onBackground)
-            Spacer(Modifier.weight(1f))
-            IconButton(onClick = { showSettings = true }) {
-                Icon(Icons.Filled.Settings, contentDescription = "Настройки", tint = cs.onSurfaceVariant)
-            }
-        }
-
-        Box(Modifier.weight(1f).fillMaxWidth()) {
-            if (vm.turns.isEmpty()) {
-                Text(
-                    "Что нарисуем?",
-                    style = MaterialTheme.typography.headlineSmall,
-                    color = cs.onSurfaceVariant,
-                    modifier = Modifier.align(Alignment.Center)
-                )
-            } else {
-                LazyColumn(
-                    state = listState,
-                    contentPadding = PaddingValues(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(24.dp)
-                ) {
-                    items(vm.turns, key = { it.id }) { t ->
-                        TurnItem(t, seen = vm.animated, onOpen = { viewing = it }, onRetry = vm::retry)
-                    }
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(start = 8.dp, end = 8.dp, top = 8.dp, bottom = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(onClick = { showGallery = true }) {
+                    Icon(Icons.Filled.Menu, contentDescription = "Галерея", tint = cs.onSurfaceVariant)
+                }
+                Text("ComfyChat", style = MaterialTheme.typography.titleLarge, color = cs.onBackground)
+                Spacer(Modifier.weight(1f))
+                IconButton(onClick = { showSettings = true }) {
+                    Icon(Icons.Filled.Settings, contentDescription = "Настройки", tint = cs.onSurfaceVariant)
                 }
             }
-        }
 
-        Surface(
-            modifier = Modifier.fillMaxWidth().padding(12.dp),
-            shape = RoundedCornerShape(24.dp),
-            color = cs.surface,
-            border = BorderStroke(1.dp, cs.outline)
-        ) {
-            Column(Modifier.padding(horizontal = 8.dp, vertical = 6.dp)) {
-                TextField(
-                    value = input,
-                    onValueChange = { input = it },
-                    placeholder = { Text("Опиши картинку по-русски…") },
-                    modifier = Modifier.fillMaxWidth(),
-                    maxLines = 5,
-                    colors = TextFieldDefaults.colors(
-                        focusedContainerColor = Color.Transparent,
-                        unfocusedContainerColor = Color.Transparent,
-                        focusedIndicatorColor = Color.Transparent,
-                        unfocusedIndicatorColor = Color.Transparent
+            Box(Modifier.weight(1f).fillMaxWidth()) {
+                if (vm.turns.isEmpty()) {
+                    Text(
+                        "Что нарисуем?",
+                        style = MaterialTheme.typography.headlineSmall,
+                        color = cs.onSurfaceVariant,
+                        modifier = Modifier.align(Alignment.Center)
                     )
-                )
-                Row(Modifier.padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    AssistChip(onClick = { vm.cycleSize() }, label = { Text(vm.size.label) })
-                    Spacer(Modifier.weight(1f))
-                    FilledIconButton(
-                        onClick = {
-                            if (running) vm.stop() else {
-                                vm.send(input)
-                                input = ""
-                            }
-                        },
-                        enabled = running || input.isNotBlank(),
-                        colors = IconButtonDefaults.filledIconButtonColors(
-                            containerColor = cs.primary,
-                            contentColor = cs.onPrimary
-                        )
+                } else {
+                    LazyColumn(
+                        state = listState,
+                        contentPadding = PaddingValues(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(24.dp)
                     ) {
-                        Icon(
-                            if (running) Icons.Filled.Close else Icons.AutoMirrored.Filled.Send,
-                            contentDescription = if (running) "Стоп" else "Отправить"
-                        )
+                        items(vm.turns, key = { it.id }) { t ->
+                            TurnItem(
+                                t,
+                                seen = vm.animated,
+                                onOpen = { viewingId = it },
+                                onRetry = vm::retry,
+                                onDelete = { confirmDeleteId = it }
+                            )
+                        }
                     }
                 }
             }
+
+            Surface(
+                modifier = Modifier.fillMaxWidth().padding(12.dp),
+                shape = RoundedCornerShape(24.dp),
+                color = cs.surface,
+                border = BorderStroke(1.dp, cs.outline)
+            ) {
+                Column(Modifier.padding(horizontal = 8.dp, vertical = 6.dp)) {
+                    TextField(
+                        value = input,
+                        onValueChange = { input = it },
+                        placeholder = { Text("Опиши картинку по-русски…") },
+                        modifier = Modifier.fillMaxWidth(),
+                        maxLines = 5,
+                        colors = TextFieldDefaults.colors(
+                            focusedContainerColor = Color.Transparent,
+                            unfocusedContainerColor = Color.Transparent,
+                            focusedIndicatorColor = Color.Transparent,
+                            unfocusedIndicatorColor = Color.Transparent
+                        )
+                    )
+                    Row(Modifier.padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        AssistChip(onClick = { vm.cycleSize() }, label = { Text(vm.size.label) })
+                        Spacer(Modifier.weight(1f))
+                        FilledIconButton(
+                            onClick = {
+                                if (running) vm.stop() else {
+                                    vm.send(input)
+                                    input = ""
+                                }
+                            },
+                            enabled = running || input.isNotBlank(),
+                            colors = IconButtonDefaults.filledIconButtonColors(
+                                containerColor = cs.primary,
+                                contentColor = cs.onPrimary
+                            )
+                        ) {
+                            Icon(
+                                if (running) Icons.Filled.Close else Icons.AutoMirrored.Filled.Send,
+                                contentDescription = if (running) "Стоп" else "Отправить"
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // затемнение главного экрана под галереей
+        AnimatedVisibility(
+            visible = showGallery,
+            enter = fadeIn(tween(380)),
+            exit = fadeOut(tween(300))
+        ) {
+            Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.35f)))
+        }
+
+        // галерея наезжает слева
+        AnimatedVisibility(
+            visible = showGallery,
+            enter = slideInHorizontally(tween(380, easing = FastOutSlowInEasing)) { -it },
+            exit = slideOutHorizontally(tween(300, easing = FastOutSlowInEasing)) { -it }
+        ) {
+            GalleryScreen(
+                turns = vm.turns,
+                onOpen = { viewingId = it },
+                onDeleteMany = vm::deleteMany,
+                onClose = { showGallery = false }
+            )
         }
     }
 
-    viewing?.let { bmp -> ImageViewer(bmp, onDismiss = { viewing = null }) }
+    viewingId?.let { id ->
+        vm.turns.firstOrNull { it.id == id }?.let { t ->
+            ImageViewer(t, onDismiss = { viewingId = null }, onDelete = { confirmDeleteId = id })
+        }
+    }
+
+    confirmDeleteId?.let { id ->
+        AlertDialog(
+            onDismissRequest = { confirmDeleteId = null },
+            title = { Text("Удалить?") },
+            text = { Text("Сообщение и картинка будут удалены без возможности восстановления.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    vm.delete(id)
+                    if (viewingId == id) viewingId = null
+                    confirmDeleteId = null
+                }) { Text("Удалить", color = cs.error) }
+            },
+            dismissButton = { TextButton(onClick = { confirmDeleteId = null }) { Text("Отмена") } }
+        )
+    }
 
     if (showSettings) {
         SettingsDialog(
             url = url,
             mode = mode,
-            onSave = { u, m ->
-                vm.saveSettings(u, m)
+            seedFixed = seedFixed,
+            seedValue = seedValue,
+            onSave = { u, m, f, sd ->
+                vm.saveSettings(u, m, f, sd)
                 showSettings = false
             },
             onDismiss = { showSettings = false }
@@ -227,17 +309,18 @@ private fun SlideIn(
 private fun TurnItem(
     t: Turn,
     seen: MutableSet<String>,
-    onOpen: (Bitmap) -> Unit,
-    onRetry: (Long) -> Unit
+    onOpen: (Long) -> Unit,
+    onRetry: (Long) -> Unit,
+    onDelete: (Long) -> Unit
 ) {
     val cs = MaterialTheme.colorScheme
     Column {
-        SlideIn("u${t.id}", seen, 0L) { UserBubble(t.prompt) }
+        SlideIn("u${t.id}", seen, 0L) { UserBubble(t.prompt, onDelete = { onDelete(t.id) }) }
         Spacer(Modifier.height(12.dp))
         SlideIn("b${t.id}", seen, 150L) {
             Column {
                 ImageCard(t, onOpen)
-                if (!t.running && t.error != null && t.result == null) {
+                if (!t.running && t.error != null && t.file == null) {
                     TextButton(onClick = { onRetry(t.id) }) { Text("Повторить") }
                 }
                 if (t.running) {
@@ -266,9 +349,9 @@ private fun TurnItem(
     }
 }
 
-/** Пузырь пользователя: зажатие подсвечивает его и открывает меню «Копировать» (как в Telegram). */
+/** Пузырь пользователя: зажатие подсвечивает его и открывает меню (как в Telegram). */
 @Composable
-private fun UserBubble(text: String) {
+private fun UserBubble(text: String, onDelete: () -> Unit) {
     val cs = MaterialTheme.colorScheme
     val clipboard = LocalClipboardManager.current
     val haptic = LocalHapticFeedback.current
@@ -319,22 +402,30 @@ private fun UserBubble(text: String) {
                         }
                     }
                 )
+                DropdownMenuItem(
+                    text = { Text("Удалить", color = cs.error) },
+                    onClick = {
+                        menu = false
+                        onDelete()
+                    }
+                )
             }
         }
     }
 }
 
 @Composable
-private fun ImageCard(t: Turn, onOpen: (Bitmap) -> Unit) {
+private fun ImageCard(t: Turn, onOpen: (Long) -> Unit) {
     val cs = MaterialTheme.colorScheme
-    val shown = t.result ?: t.preview
+    val fileBmp = rememberFileBitmap(t.file, 1280)
+    val shown = fileBmp ?: t.preview
     Box(
         Modifier
             .fillMaxWidth()
             .aspectRatio(t.size.w.toFloat() / t.size.h)
             .clip(RoundedCornerShape(16.dp))
             .background(cs.surface)
-            .clickable(enabled = t.result != null) { t.result?.let(onOpen) }
+            .clickable(enabled = t.file != null) { onOpen(t.id) }
     ) {
         if (shown != null) {
             val img = remember(shown) { shown.asImageBitmap() }
@@ -344,7 +435,7 @@ private fun ImageCard(t: Turn, onOpen: (Bitmap) -> Unit) {
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Fit
             )
-        } else {
+        } else if (t.file == null) {
             Text(
                 t.error ?: t.stage,
                 modifier = Modifier.align(Alignment.Center).padding(24.dp),
@@ -376,11 +467,15 @@ private fun ImageCard(t: Turn, onOpen: (Bitmap) -> Unit) {
 private fun SettingsDialog(
     url: String,
     mode: ThemeMode,
-    onSave: (String, ThemeMode) -> Unit,
+    seedFixed: Boolean,
+    seedValue: String,
+    onSave: (String, ThemeMode, Boolean, String) -> Unit,
     onDismiss: () -> Unit
 ) {
     var u by remember { mutableStateOf(url) }
     var m by remember { mutableStateOf(mode) }
+    var fixed by remember { mutableStateOf(seedFixed) }
+    var seed by remember { mutableStateOf(seedValue) }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Настройки") },
@@ -402,9 +497,31 @@ private fun SettingsDialog(
                         FilterChip(selected = m == k, onClick = { m = k }, label = { Text(label) })
                     }
                 }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Фиксированный сид", modifier = Modifier.weight(1f))
+                    Switch(checked = fixed, onCheckedChange = { fixed = it })
+                }
+                if (fixed) {
+                    OutlinedTextField(
+                        value = seed,
+                        onValueChange = { v -> seed = v.filter { it.isDigit() }.take(18) },
+                        label = { Text("Сид") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    TextButton(onClick = { seed = Random.nextLong(0L, 1L shl 50).toString() }) {
+                        Text("Случайный")
+                    }
+                }
             }
         },
-        confirmButton = { TextButton(onClick = { onSave(u, m) }) { Text("Сохранить") } },
+        confirmButton = {
+            TextButton(onClick = {
+                val s = if (fixed && seed.isBlank()) Random.nextLong(0L, 1L shl 50).toString() else seed
+                onSave(u, m, fixed, s)
+            }) { Text("Сохранить") }
+        },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } }
     )
 }

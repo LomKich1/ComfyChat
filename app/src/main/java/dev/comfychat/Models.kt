@@ -1,6 +1,7 @@
 package dev.comfychat
 
 import android.graphics.Bitmap
+import java.io.File
 
 enum class ThemeMode { AUTO, LIGHT, DARK }
 
@@ -41,7 +42,7 @@ data class Turn(
     val percent: Int? = null,
     val preview: Bitmap? = null,
     val tags: String? = null,
-    val result: Bitmap? = null,
+    val file: File? = null,   // сохранённая картинка (история)
     val error: String? = null,
     val running: Boolean = true
 )

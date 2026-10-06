@@ -350,8 +350,8 @@ class ComfyClient(private val baseUrl: String) {
         }
     }.flowOn(Dispatchers.IO)
 
-    /** Скачивание результата с повторами: сеть могла моргнуть как раз в этот момент. */
-    suspend fun fetchImage(ref: ImageRef): Bitmap? = withContext(Dispatchers.IO) {
+    /** Скачивание результата (оригинальный PNG) с повторами: сеть могла моргнуть как раз в этот момент. */
+    suspend fun fetchImageBytes(ref: ImageRef): ByteArray? = withContext(Dispatchers.IO) {
         val url = "$baseUrl/view".toHttpUrl().newBuilder()
             .addQueryParameter("filename", ref.filename)
             .addQueryParameter("subfolder", ref.subfolder)
@@ -359,11 +359,10 @@ class ComfyClient(private val baseUrl: String) {
             .build()
         repeat(3) { attempt ->
             try {
-                val bmp = download.newCall(Request.Builder().url(url).build()).execute().use { r ->
-                    if (!r.isSuccessful) null
-                    else r.body?.bytes()?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }
+                val bytes = download.newCall(Request.Builder().url(url).build()).execute().use { r ->
+                    if (r.isSuccessful) r.body?.bytes() else null
                 }
-                if (bmp != null) return@withContext bmp
+                if (bytes != null && bytes.isNotEmpty()) return@withContext bytes
             } catch (e: IOException) {
                 // повторим
             }
