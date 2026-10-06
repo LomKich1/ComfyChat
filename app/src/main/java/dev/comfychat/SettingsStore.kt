@@ -33,6 +33,8 @@ class SettingsStore(private val ctx: Context) {
     private val seedFixedKey = booleanPreferencesKey("seed_fixed")
     private val seedKey = stringPreferencesKey("seed")
     private val ckptKey = stringPreferencesKey("ckpt")
+    private val sizeKey = stringPreferencesKey("size")
+    private val sizesKey = stringPreferencesKey("recent_sizes")
 
     val url: Flow<String> = ctx.dataStore.data.map { it[urlKey] ?: "http://192.168.0.10:8188" }
 
@@ -43,11 +45,29 @@ class SettingsStore(private val ctx: Context) {
     /** Пустая строка: оставить модель, прописанную в workflow.json. */
     val ckpt: Flow<String> = ctx.dataStore.data.map { it[ckptKey] ?: "" }
 
+    val size: Flow<Size> = ctx.dataStore.data.map { Size.parse(it[sizeKey] ?: "") ?: Size.DEFAULT }
+
+    /** Недавно введённые свои разрешения (до 4, свежие первыми). */
+    val recentSizes: Flow<List<Size>> = ctx.dataStore.data.map { p ->
+        (p[sizesKey] ?: "").split(';').mapNotNull { Size.parse(it) }
+    }
+
     val seedFixed: Flow<Boolean> = ctx.dataStore.data.map { it[seedFixedKey] ?: false }
     val seed: Flow<String> = ctx.dataStore.data.map { it[seedKey] ?: "" }
 
     suspend fun setUrl(v: String) {
         ctx.dataStore.edit { it[urlKey] = normalizeUrl(v) }
+    }
+
+    suspend fun setSize(v: Size) {
+        ctx.dataStore.edit { it[sizeKey] = v.key }
+    }
+
+    suspend fun rememberCustomSize(v: Size) {
+        ctx.dataStore.edit { p ->
+            val cur = (p[sizesKey] ?: "").split(';').mapNotNull { Size.parse(it) }
+            p[sizesKey] = (listOf(v) + cur.filter { it != v }).take(4).joinToString(";") { it.key }
+        }
     }
 
     suspend fun setCkpt(v: String) {

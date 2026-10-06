@@ -22,6 +22,7 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlin.random.Random
 
 private fun JsonObject.patch(node: String, input: String, value: JsonElement): JsonObject {
@@ -43,8 +44,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     val seedValue = settings.seed.stateIn(viewModelScope, SharingStarted.Eagerly, "")
 
     val turns = mutableStateListOf<Turn>()
-    var size by mutableStateOf(SizeOption.WIDE)
+    var size by mutableStateOf(Size.DEFAULT)
         private set
+    val recentSizes = settings.recentSizes.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     /** Ключи уже проигранных анимаций появления (чтобы не повторять при скролле). */
     val animated: MutableSet<String> = mutableSetOf()
@@ -60,7 +62,15 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Модель, прописанная в workflow.json: пока ничего не выбрано, берётся она. */
+    val defaultCkpt: String by lazy {
+        runCatching {
+            template[Wf.CHECKPOINT]!!.jsonObject["inputs"]!!.jsonObject["ckpt_name"]!!.jsonPrimitive.content
+        }.getOrDefault("")
+    }
+
     init {
+        viewModelScope.launch { size = settings.size.first() }
         viewModelScope.launch {
             val items = withContext(Dispatchers.IO) { store.load() }
             val restored = items.mapNotNull { s ->
@@ -68,7 +78,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 if (!f.exists()) null else Turn(
                     id = s.id,
                     prompt = s.prompt,
-                    size = SizeOption.entries.firstOrNull { it.name == s.size } ?: SizeOption.WIDE,
+                    size = Size.parse(s.size) ?: Size.DEFAULT,
                     stage = "",
                     tags = s.tags,
                     file = f,
@@ -84,9 +94,16 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun cycleSize() {
-        val all = SizeOption.entries
-        size = all[(size.ordinal + 1) % all.size]
+    fun setSize(s: Size) {
+        size = s
+        viewModelScope.launch {
+            settings.setSize(s)
+            if (Size.PRESETS.none { it.size == s }) settings.rememberCustomSize(s)
+        }
+    }
+
+    fun setCkpt(name: String) {
+        viewModelScope.launch { settings.setCkpt(name) }
     }
 
     /** Список чекпоинтов с сервера по указанному адресу; null, если не достучались. */
@@ -94,9 +111,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         runCatching { ComfyClient(url).listCheckpoints().sortedBy { it.lowercase() } }.getOrNull()
     }
 
-    fun saveSettings(url: String, mode: ThemeMode, seedFixed: Boolean, seed: String, ckpt: String) {
+    fun saveSettings(url: String, mode: ThemeMode, seedFixed: Boolean, seed: String) {
         viewModelScope.launch {
-            settings.setCkpt(ckpt)
             settings.setUrl(url)
             settings.setTheme(mode)
             settings.setSeed(seedFixed, seed)
@@ -155,14 +171,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun persist() {
         val snapshot = turns.mapNotNull { t ->
-            t.file?.let { Saved(t.id, t.prompt, t.tags, it.name, t.size.name) }
+            t.file?.let { Saved(t.id, t.prompt, t.tags, it.name, t.size.key) }
         }
         viewModelScope.launch(Dispatchers.IO) {
             saveLock.withLock { runCatching { store.save(snapshot) } }
         }
     }
 
-    private fun startGeneration(id: Long, text: String, sizeOpt: SizeOption) {
+    private fun startGeneration(id: Long, text: String, sizeOpt: Size) {
         job = viewModelScope.launch {
             activeClient = null
             try {
