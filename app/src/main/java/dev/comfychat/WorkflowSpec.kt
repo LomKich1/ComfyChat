@@ -27,7 +27,7 @@ class WorkflowSpec(
     val prompt: NodeInput,
     val sampler: String,
     val seed: NodeInput?,
-    val output: String,
+    val outputs: Set<String>,
     val translator: String?,
     val tagsPreview: String?,
     val checkpoint: String?,
@@ -135,11 +135,9 @@ class WorkflowSpec(
             )
 
             val decode = ids.firstOrNull { wf.cls(it).orEmpty().startsWith("VAEDecode") }
-            val outputs = ids.filter { wf.cls(it) in OUTPUT_CLASSES }
-            val output = outputs.firstOrNull { o ->
-                decode != null && link(wf.inputsOf(o)?.get("images"))?.first == decode
-            } ?: outputs.firstOrNull()
-            ?: throw WorkflowError("В воркфлоу нет PreviewImage или SaveImage")
+            // все выходные ноды: при ветвлении (Branch) отработает только одна из них
+            val outputs = ids.filter { wf.cls(it) in OUTPUT_CLASSES }.toSet()
+            if (outputs.isEmpty()) throw WorkflowError("В воркфлоу нет PreviewImage или SaveImage")
 
             val translator = ids.firstOrNull { wf.cls(it) == "RuDanbooruTags" }
             val tagsPreview = translator?.let { t ->
@@ -155,7 +153,7 @@ class WorkflowSpec(
                     wf.inputsOf(id)?.get("height") is JsonPrimitive
             }
 
-            return WorkflowSpec(prompt, sampler, seed, output, translator, tagsPreview, checkpoint, latent, decode)
+            return WorkflowSpec(prompt, sampler, seed, outputs, translator, tagsPreview, checkpoint, latent, decode)
         }
     }
 }

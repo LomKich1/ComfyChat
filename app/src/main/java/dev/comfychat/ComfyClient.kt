@@ -180,7 +180,10 @@ class ComfyClient(private val baseUrl: String) {
             spec.tagsPreview?.let { tp ->
                 firstText(outputs?.get(tp) as? JsonObject)?.let { send(GenEvent.Tags(it)) }
             }
-            val imgs = parseImages((outputs?.get(spec.output) as? JsonObject)?.get("images") as? JsonArray)
+            // выходных нод может быть несколько (ветки Branch): берём картинки из той, что реально отработала
+            val imgs = spec.outputs.flatMap { id ->
+                parseImages((outputs?.get(id) as? JsonObject)?.get("images") as? JsonArray)
+            }
             if (imgs.isNotEmpty()) {
                 images.clear()
                 images.addAll(imgs)
@@ -286,7 +289,7 @@ class ComfyClient(private val baseUrl: String) {
                     val node = data["node"]?.jsonPrimitive?.contentOrNull
                     val out = data["output"] as? JsonObject
                     if (spec.tagsPreview != null && node == spec.tagsPreview) firstText(out)?.let { send(GenEvent.Tags(it)) }
-                    if (node == spec.output) images.addAll(parseImages(out?.get("images") as? JsonArray))
+                    if (node != null && node in spec.outputs) images.addAll(parseImages(out?.get("images") as? JsonArray))
                 }
                 "execution_success" -> complete()
                 "execution_interrupted" -> finish(GenEvent.Failed("Остановлено"))
