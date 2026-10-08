@@ -21,6 +21,7 @@ import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
@@ -49,6 +50,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  *    слать события), а результат при необходимости добирается из /history;
  *  - prompt_id задаём сами, поэтому повторная отправка безопасна и дубликатов не плодит.
  */
+data class RemoteWorkflow(val name: String, val hash: String, val mtime: Long, val valid: Boolean)
+
 class ComfyClient(private val baseUrl: String) {
 
     private val rest = OkHttpClient.Builder()
@@ -123,10 +126,10 @@ class ComfyClient(private val baseUrl: String) {
         awaitClose { ws.cancel() }
     }.buffer(Channel.UNLIMITED)
 
-    private fun stageFor(node: String): String? = when (node) {
-        Wf.TRANSLATOR -> "Перевожу описание в теги…"
-        Wf.SAMPLER -> "Генерирую…"
-        Wf.DECODE -> "Декодирую…"
+    private fun stageFor(node: String, spec: WorkflowSpec): String? = when (node) {
+        spec.translator -> "Перевожу описание в теги…"
+        spec.sampler -> "Генерирую…"
+        spec.decode -> "Декодирую…"
         else -> null
     }
 
@@ -158,7 +161,7 @@ class ComfyClient(private val baseUrl: String) {
         return BitmapFactory.decodeByteArray(b, offset, b.size - offset)
     }
 
-    fun generate(workflow: JsonObject): Flow<GenEvent> = channelFlow {
+    fun generate(workflow: JsonObject, spec: WorkflowSpec): Flow<GenEvent> = channelFlow {
         val images = mutableListOf<ImageRef>()
         var promptId = UUID.randomUUID().toString()
         var finished = false
@@ -174,8 +177,10 @@ class ComfyClient(private val baseUrl: String) {
         }
 
         suspend fun applyOutputs(outputs: JsonObject?) {
-            firstText(outputs?.get(Wf.TAGS_PREVIEW) as? JsonObject)?.let { send(GenEvent.Tags(it)) }
-            val imgs = parseImages((outputs?.get(Wf.OUTPUT) as? JsonObject)?.get("images") as? JsonArray)
+            spec.tagsPreview?.let { tp ->
+                firstText(outputs?.get(tp) as? JsonObject)?.let { send(GenEvent.Tags(it)) }
+            }
+            val imgs = parseImages((outputs?.get(spec.output) as? JsonObject)?.get("images") as? JsonArray)
             if (imgs.isNotEmpty()) {
                 images.clear()
                 images.addAll(imgs)
@@ -269,19 +274,19 @@ class ComfyClient(private val baseUrl: String) {
             when (type) {
                 "executing" -> {
                     val node = data["node"]?.jsonPrimitive?.contentOrNull
-                    if (node == null) complete() else stageFor(node)?.let { send(GenEvent.Stage(it)) }
+                    if (node == null) complete() else stageFor(node, spec)?.let { send(GenEvent.Stage(it)) }
                 }
                 "progress" -> {
                     val node = data["node"]?.jsonPrimitive?.contentOrNull
                     val v = data["value"]?.jsonPrimitive?.intOrNull ?: return
                     val m = data["max"]?.jsonPrimitive?.intOrNull ?: return
-                    if (m > 0 && (node == null || node == Wf.SAMPLER)) send(GenEvent.Progress(v, m))
+                    if (m > 0 && (node == null || node == spec.sampler)) send(GenEvent.Progress(v, m))
                 }
                 "executed" -> {
                     val node = data["node"]?.jsonPrimitive?.contentOrNull
                     val out = data["output"] as? JsonObject
-                    if (node == Wf.TAGS_PREVIEW) firstText(out)?.let { send(GenEvent.Tags(it)) }
-                    if (node == Wf.OUTPUT) images.addAll(parseImages(out?.get("images") as? JsonArray))
+                    if (spec.tagsPreview != null && node == spec.tagsPreview) firstText(out)?.let { send(GenEvent.Tags(it)) }
+                    if (node == spec.output) images.addAll(parseImages(out?.get("images") as? JsonArray))
                 }
                 "execution_success" -> complete()
                 "execution_interrupted" -> finish(GenEvent.Failed("Остановлено"))
@@ -389,6 +394,34 @@ class ComfyClient(private val baseUrl: String) {
             else -> null
         }
         return list?.mapNotNull { it.jsonPrimitive.contentOrNull }.orEmpty()
+    }
+
+    /** Воркфлоу, лежащие на ПК (расширение app_bridge). Блокирующий вызов, дёргать из IO. */
+    fun listWorkflows(): List<RemoteWorkflow> {
+        val body = rest.newCall(Request.Builder().url("$baseUrl/app_bridge/workflows").build())
+            .execute().use { r ->
+                if (!r.isSuccessful) throw IOException("HTTP ${r.code}")
+                r.body?.string().orEmpty()
+            }
+        return (json.parseToJsonElement(body) as? JsonArray).orEmpty().mapNotNull { el ->
+            val o = el as? JsonObject ?: return@mapNotNull null
+            val name = o["name"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+            RemoteWorkflow(
+                name = name,
+                hash = o["hash"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+                mtime = o["mtime"]?.jsonPrimitive?.longOrNull ?: 0L,
+                valid = o["valid"]?.jsonPrimitive?.booleanOrNull ?: false
+            )
+        }
+    }
+
+    /** Сырые байты файла с ПК: хэш на телефоне считается ровно от них. */
+    fun fetchWorkflow(name: String): ByteArray {
+        val url = "$baseUrl/app_bridge/workflows".toHttpUrl().newBuilder().addPathSegment(name).build()
+        return rest.newCall(Request.Builder().url(url).build()).execute().use { r ->
+            if (!r.isSuccessful) throw IOException("HTTP ${r.code}")
+            r.body?.bytes() ?: throw IOException("пустой ответ")
+        }
     }
 
     /** Блокирующий вызов, дёргать из IO. Таймаут 30 с, так что зависнуть надолго не может. */

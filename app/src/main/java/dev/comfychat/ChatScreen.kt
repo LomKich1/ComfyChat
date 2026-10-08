@@ -8,6 +8,8 @@ import androidx.compose.ui.geometry.Rect
 import android.os.Build
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
@@ -124,6 +126,11 @@ fun ChatScreen(vm: ChatViewModel) {
     var input by remember { mutableStateOf("") }
     var settingsAnchor by remember { mutableStateOf<Rect?>(null) }
     val settingsRect = remember { RectHolder() }
+    var wfAnchor by remember { mutableStateOf<Rect?>(null) }
+    val wfRect = remember { RectHolder() }
+    val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) vm.importWorkflow(uri)
+    }
     var showGallery by remember { mutableStateOf(false) }
     var viewingId by remember { mutableStateOf<Long?>(null) }
     var confirmDeleteId by remember { mutableStateOf<Long?>(null) }
@@ -161,6 +168,22 @@ fun ChatScreen(vm: ChatViewModel) {
                 }
                 Text("ComfyChat", style = MaterialTheme.typography.titleLarge, color = cs.onBackground)
                 Spacer(Modifier.weight(1f))
+                AssistChip(
+                    onClick = {
+                        wfAnchor = wfRect.r
+                        vm.refreshWorkflows()
+                    },
+                    label = {
+                        Text(
+                            vm.active?.title ?: "Воркфлоу",
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    },
+                    modifier = Modifier
+                        .widthIn(max = 170.dp)
+                        .onGloballyPositioned { wfRect.r = it.boundsInRoot() }
+                )
                 IconButton(
                     onClick = { settingsAnchor = settingsRect.r },
                     modifier = Modifier.onGloballyPositioned { settingsRect.r = it.boundsInRoot() }
@@ -224,7 +247,7 @@ fun ChatScreen(vm: ChatViewModel) {
                             modifier = Modifier.onGloballyPositioned { sizeRect.r = it.boundsInRoot() }
                         )
                         Spacer(Modifier.width(8.dp))
-                        AssistChip(
+                        if (vm.hasCheckpoint) AssistChip(
                             onClick = {
                                 ckptAnchor = ckptRect.r
                                 models = null
@@ -251,7 +274,7 @@ fun ChatScreen(vm: ChatViewModel) {
                             modifier = Modifier
                                 .weight(1f)
                                 .onGloballyPositioned { ckptRect.r = it.boundsInRoot() }
-                        )
+                        ) else Spacer(Modifier.weight(1f))
                         Spacer(Modifier.width(8.dp))
                         FilledIconButton(
                             onClick = {
@@ -319,6 +342,27 @@ fun ChatScreen(vm: ChatViewModel) {
                     settingsAnchor = null
                 },
                 onDismiss = { settingsAnchor = null }
+            )
+        }
+
+        MorphPopup(
+            anchor = wfAnchor,
+            placement = MorphPlacement.CENTER,
+            color = cs.surfaceContainerHigh,
+            startRadius = 8.dp,
+            endRadius = 28.dp,
+            scrimAlpha = 0.35f,
+            onDismiss = { wfAnchor = null }
+        ) {
+            WorkflowPickerContent(
+                items = vm.workflowItems,
+                selectedId = vm.active?.id.orEmpty(),
+                busy = vm.wfBusy,
+                status = vm.wfStatus,
+                onPick = { vm.selectWorkflow(it) },
+                onRefresh = { vm.refreshWorkflows() },
+                onImport = { importLauncher.launch(arrayOf("application/json", "text/plain", "application/octet-stream")) },
+                onClose = { wfAnchor = null }
             )
         }
 

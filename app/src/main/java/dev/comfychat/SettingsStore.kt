@@ -36,6 +36,7 @@ class SettingsStore(private val ctx: Context) {
     private val ckptKey = stringPreferencesKey("ckpt")
     private val sizeKey = stringPreferencesKey("size")
     private val sizesKey = stringPreferencesKey("recent_sizes")
+    private val workflowKey = stringPreferencesKey("workflow")
 
     val url: Flow<String> = ctx.dataStore.data.map { it[urlKey] ?: "http://192.168.0.10:8188" }
 
@@ -56,11 +57,18 @@ class SettingsStore(private val ctx: Context) {
         (p[sizesKey] ?: "").split(';').mapNotNull { Size.parse(it) }
     }
 
+    /** Активный воркфлоу: builtin, pc:<имя> или local:<имя>. */
+    val workflow: Flow<String> = ctx.dataStore.data.map { it[workflowKey] ?: WorkflowStore.BUILTIN }
+
     val seedFixed: Flow<Boolean> = ctx.dataStore.data.map { it[seedFixedKey] ?: false }
     val seed: Flow<String> = ctx.dataStore.data.map { it[seedKey] ?: "" }
 
     suspend fun setUrl(v: String) {
         ctx.dataStore.edit { it[urlKey] = normalizeUrl(v) }
+    }
+
+    suspend fun setWorkflow(v: String) {
+        ctx.dataStore.edit { it[workflowKey] = v }
     }
 
     suspend fun setSize(v: Size) {

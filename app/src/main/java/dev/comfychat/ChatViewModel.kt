@@ -1,6 +1,8 @@
 package dev.comfychat
 
 import android.app.Application
+import android.net.Uri
+import android.provider.OpenableColumns
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -21,6 +23,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlin.random.Random
@@ -31,6 +34,20 @@ private fun JsonObject.patch(node: String, input: String, value: JsonElement): J
     val newNode = JsonObject(n + ("inputs" to JsonObject(inputs + (input to value))))
     return JsonObject(this + (node to newNode))
 }
+
+/** Загруженный и разобранный воркфлоу. */
+class LoadedWorkflow(val id: String, val json: JsonObject, val spec: WorkflowSpec) {
+    val title: String get() = WorkflowStore.title(id)
+
+    /** Модель, прописанная в воркфлоу: пока ничего не выбрано, берётся она. */
+    val defaultCkpt: String = spec.checkpoint
+        ?.let { ((json[it] as? JsonObject)?.get("inputs") as? JsonObject)?.get("ckpt_name") }
+        ?.let { (it as? JsonPrimitive)?.contentOrNull }
+        .orEmpty()
+}
+
+/** Строка в списке выбора воркфлоу. */
+data class WorkflowItem(val id: String, val title: String, val note: String, val enabled: Boolean)
 
 class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private val settings = SettingsStore(app)
@@ -57,20 +74,38 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private var job: Job? = null
     private var activeClient: ComfyClient? = null
 
-    private val template: JsonObject by lazy {
-        getApplication<Application>().assets.open("workflow.json").bufferedReader().use {
-            Json.parseToJsonElement(it.readText()).jsonObject
-        }
-    }
+    private val wfStore = WorkflowStore(app)
 
-    /** Модель, прописанная в workflow.json: пока ничего не выбрано, берётся она. */
-    val defaultCkpt: String by lazy {
-        runCatching {
-            template[Wf.CHECKPOINT]!!.jsonObject["inputs"]!!.jsonObject["ckpt_name"]!!.jsonPrimitive.content
-        }.getOrDefault("")
+    /** Активный воркфлоу; null только в первые миллисекунды после запуска. */
+    var active by mutableStateOf<LoadedWorkflow?>(null)
+        private set
+    var workflowItems by mutableStateOf<List<WorkflowItem>>(emptyList())
+        private set
+    var wfBusy by mutableStateOf(false)
+        private set
+    var wfStatus by mutableStateOf<String?>(null)
+        private set
+    private var remoteList: List<RemoteWorkflow>? = null
+
+    val defaultCkpt: String get() = active?.defaultCkpt.orEmpty()
+
+    /** Есть ли в воркфлоу нода с моделью (иначе кнопку выбора модели прячем). */
+    val hasCheckpoint: Boolean get() = active?.spec?.checkpoint != null
+
+    private fun loadWorkflow(id: String): LoadedWorkflow {
+        val bytes = wfStore.read(id) ?: throw WorkflowError("Файл воркфлоу не найден")
+        val (json, spec) = WorkflowSpec.parse(bytes)
+        return LoadedWorkflow(id, json, spec)
     }
 
     init {
+        viewModelScope.launch {
+            val id = settings.workflow.first()
+            active = withContext(Dispatchers.IO) {
+                runCatching { loadWorkflow(id) }.getOrElse { loadWorkflow(WorkflowStore.BUILTIN) }
+            }
+            rebuildItems()
+        }
         viewModelScope.launch { size = settings.size.first() }
         viewModelScope.launch {
             val items = withContext(Dispatchers.IO) { store.load() }
@@ -117,6 +152,177 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             }
             null
         }
+    }
+
+    // ---------- воркфлоу: список, выбор, импорт, синхронизация с ПК ----------
+
+    private fun rebuildItems() {
+        val remote = remoteList
+        val items = mutableListOf<WorkflowItem>()
+        items += WorkflowItem(WorkflowStore.BUILTIN, WorkflowStore.title(WorkflowStore.BUILTIN), "в приложении", true)
+        remote?.forEach { r ->
+            val id = "pc:${r.name}"
+            val cached = wfStore.hashOf(id)
+            val note = when {
+                !r.valid -> "на ПК · не API-формат"
+                cached == null -> "на ПК · не скачан"
+                cached == r.hash -> "с ПК · актуальный"
+                else -> "с ПК · есть обновление"
+            }
+            items += WorkflowItem(id, WorkflowStore.title(id), note, r.valid)
+        }
+        val remoteNames = remote?.map { it.name }?.toSet().orEmpty()
+        wfStore.names("pc").filter { it !in remoteNames }.forEach { n ->
+            val id = "pc:$n"
+            items += WorkflowItem(id, WorkflowStore.title(id), if (remote == null) "с ПК · из кэша" else "с ПК · на ПК удалён", true)
+        }
+        wfStore.names("local").forEach { n ->
+            val id = "local:$n"
+            items += WorkflowItem(id, WorkflowStore.title(id), "с телефона", true)
+        }
+        workflowItems = items
+    }
+
+    /** Адрес, по которому ПК сейчас отвечает: дом, поиск в локалке, туннель. */
+    private suspend fun reachableUrl(): String? {
+        val home = settings.url.first()
+        val tun = settings.tunnel.first()
+        if (home.isNotBlank() && LanDiscovery.ping(home)) return home
+        if (LanDiscovery.isLanUrl(home)) {
+            LanDiscovery.find(LanDiscovery.portOf(home))?.let {
+                settings.setUrl(it)
+                return it
+            }
+        }
+        if (tun.isNotBlank() && LanDiscovery.ping(tun)) return tun
+        return null
+    }
+
+    /** Открытие списка: подтягиваем с ПК, что там лежит, и сверяем с кэшем. */
+    fun refreshWorkflows() {
+        rebuildItems()
+        if (wfBusy) return
+        viewModelScope.launch {
+            wfBusy = true
+            wfStatus = "Ищу ПК…"
+            try {
+                val url = reachableUrl()
+                if (url == null) {
+                    remoteList = null
+                    wfStatus = "ПК недоступен, показываю сохранённые"
+                } else {
+                    val res = withContext(Dispatchers.IO) { runCatching { ComfyClient(url).listWorkflows() } }
+                    res.onSuccess {
+                        remoteList = it.sortedBy { w -> w.name.lowercase() }
+                        wfStatus = if (it.isEmpty()) "На ПК в папке api_workflows пока пусто" else null
+                    }.onFailure {
+                        remoteList = null
+                        wfStatus = if (it.message == "HTTP 404") {
+                            "На ПК нет расширения app_bridge (или ComfyUI не перезапускали)"
+                        } else {
+                            "Не удалось получить список: ${it.message}"
+                        }
+                    }
+                }
+            } finally {
+                wfBusy = false
+                rebuildItems()
+            }
+        }
+    }
+
+    /** Докачивает файл с ПК, если его нет или он изменился. Без связи молча оставляет кэш. */
+    private suspend fun syncPc(id: String) {
+        val name = id.removePrefix("pc:")
+        val remote = remoteList?.firstOrNull { it.name == name }
+        val cached = wfStore.hashOf(id)
+        if (remote == null && cached != null) return
+        if (remote != null && remote.valid && cached == remote.hash) return
+        val url = reachableUrl()
+        if (url == null) {
+            if (cached != null) return
+            throw WorkflowError("ПК недоступен, а файл ещё не скачан")
+        }
+        val bytes = withContext(Dispatchers.IO) { ComfyClient(url).fetchWorkflow(name) }
+        WorkflowSpec.parse(bytes)   // сначала проверяем, потом кладём в кэш
+        wfStore.write(id, bytes)
+    }
+
+    fun selectWorkflow(item: WorkflowItem) {
+        if (wfBusy || !item.enabled) return
+        viewModelScope.launch {
+            wfBusy = true
+            wfStatus = null
+            try {
+                if (item.id.startsWith("pc:")) {
+                    try {
+                        syncPc(item.id)
+                    } catch (e: java.io.IOException) {
+                        if (wfStore.read(item.id) == null) throw WorkflowError("Не удалось скачать: ${e.message}")
+                    }
+                }
+                val loaded = withContext(Dispatchers.IO) { loadWorkflow(item.id) }
+                active = loaded
+                settings.setWorkflow(item.id)
+            } catch (e: WorkflowError) {
+                wfStatus = e.message
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                wfStatus = "Не получилось: ${e.message ?: e}"
+            } finally {
+                wfBusy = false
+                rebuildItems()
+            }
+        }
+    }
+
+    fun importWorkflow(uri: Uri) {
+        viewModelScope.launch {
+            wfBusy = true
+            wfStatus = null
+            try {
+                val ctx = getApplication<Application>()
+                val (name, bytes) = withContext(Dispatchers.IO) {
+                    val n = ctx.contentResolver
+                        .query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+                        ?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
+                        ?: "workflow.json"
+                    val b = ctx.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                        ?: throw WorkflowError("Не смог прочитать файл")
+                    if (b.size > 5_000_000) throw WorkflowError("Файл слишком большой для воркфлоу")
+                    n to b
+                }
+                WorkflowSpec.parse(bytes)
+                val clean = name.replace(Regex("[\\\\/:*?\"<>|]"), "_")
+                val id = "local:" + if (clean.endsWith(".json", true)) clean else "$clean.json"
+                wfStore.write(id, bytes)
+                val loaded = withContext(Dispatchers.IO) { loadWorkflow(id) }
+                active = loaded
+                settings.setWorkflow(id)
+                wfStatus = "Импортировал: ${loaded.title}"
+            } catch (e: WorkflowError) {
+                wfStatus = e.message
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                wfStatus = "Не получилось: ${e.message ?: e}"
+            } finally {
+                wfBusy = false
+                rebuildItems()
+            }
+        }
+    }
+
+    /** Перед генерацией: если активный воркфлоу с ПК и там он изменился, берём свежий. Тихо, без ошибок. */
+    private fun quickSync(client: ComfyClient, cur: LoadedWorkflow): LoadedWorkflow? {
+        val name = cur.id.removePrefix("pc:")
+        val r = client.listWorkflows().firstOrNull { it.name == name } ?: return null
+        if (!r.valid || r.hash == wfStore.hashOf(cur.id)) return null
+        val bytes = client.fetchWorkflow(name)
+        val (json, spec) = WorkflowSpec.parse(bytes)
+        wfStore.write(cur.id, bytes)
+        return LoadedWorkflow(cur.id, json, spec)
     }
 
     fun saveSettings(url: String, tunnel: String, mode: ThemeMode, seedFixed: Boolean, seed: String) {
@@ -211,15 +417,26 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 val fixed = settings.seedFixed.first()
                 val fixedSeed = settings.seed.first().toLongOrNull()
                 val seed = if (fixed && fixedSeed != null) fixedSeed else Random.nextLong() ushr 14
-                var wf = template
-                    .patch(Wf.PROMPT, "value", JsonPrimitive(text))
-                    .patch(Wf.SAMPLER, "seed", JsonPrimitive(seed))
-                    .patch(Wf.LATENT, "width", JsonPrimitive(sizeOpt.w))
-                    .patch(Wf.LATENT, "height", JsonPrimitive(sizeOpt.h))
+                var cur = active ?: withContext(Dispatchers.IO) { loadWorkflow(WorkflowStore.BUILTIN) }
+                if (cur.id.startsWith("pc:")) {
+                    val before = cur
+                    val fresh = withContext(Dispatchers.IO) { runCatching { quickSync(client, before) }.getOrNull() }
+                    if (fresh != null) {
+                        cur = fresh
+                        active = fresh
+                    }
+                }
+                val spec = cur.spec
+                var wf = cur.json.patch(spec.prompt.node, spec.prompt.input, JsonPrimitive(text))
+                spec.seed?.let { wf = wf.patch(it.node, it.input, JsonPrimitive(seed)) }
+                spec.latent?.let {
+                    wf = wf.patch(it, "width", JsonPrimitive(sizeOpt.w)).patch(it, "height", JsonPrimitive(sizeOpt.h))
+                }
                 val ck = settings.ckpt.first()
-                if (ck.isNotBlank()) wf = wf.patch(Wf.CHECKPOINT, "ckpt_name", JsonPrimitive(ck))
+                val ckNode = spec.checkpoint
+                if (ck.isNotBlank() && ckNode != null) wf = wf.patch(ckNode, "ckpt_name", JsonPrimitive(ck))
 
-                client.generate(wf).collect { ev ->
+                client.generate(wf, spec).collect { ev ->
                     when (ev) {
                         is GenEvent.Stage -> update(id) { it.copy(stage = ev.text) }
                         is GenEvent.Progress -> update(id) { it.copy(percent = ev.value * 100 / ev.max) }

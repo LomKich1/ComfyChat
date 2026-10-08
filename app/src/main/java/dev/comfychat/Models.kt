@@ -47,18 +47,6 @@ data class Size(val w: Int, val h: Int) {
     }
 }
 
-/** ID нод в workflow.json (API-формат). Поменяешь workflow — поправь тут. */
-object Wf {
-    const val TRANSLATOR = "1"   // RuDanbooruTags
-    const val PROMPT = "2"       // PrimitiveStringMultiline: сюда идёт русский текст
-    const val TAGS_PREVIEW = "4" // PreviewAny с итоговыми тегами
-    const val SAMPLER = "7"      // KSampler
-    const val OUTPUT = "8"       // PreviewImage: финальная картинка
-    const val CHECKPOINT = "6"   // CheckpointLoaderSimple: модель
-    const val LATENT = "9"       // EmptyLatentImage: размер
-    const val DECODE = "11"      // VAEDecode
-}
-
 data class ImageRef(val filename: String, val subfolder: String, val type: String)
 
 sealed interface GenEvent {
