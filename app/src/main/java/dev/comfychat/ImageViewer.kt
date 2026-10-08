@@ -37,6 +37,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -57,7 +58,10 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.DialogWindowProvider
+import androidx.core.view.WindowCompat
 
 private const val MAX_SCALE = 8f
 private const val DOUBLE_TAP_SCALE = 3f
@@ -72,8 +76,15 @@ fun ImageViewer(turn: Turn, onDismiss: () -> Unit, onDelete: () -> Unit) {
 
     Dialog(
         onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
     ) {
+        val dialogView = LocalView.current
+        SideEffect {
+            val w = (dialogView.parent as? DialogWindowProvider)?.window ?: return@SideEffect
+            val c = WindowCompat.getInsetsController(w, dialogView)
+            c.isAppearanceLightStatusBars = false
+            c.isAppearanceLightNavigationBars = false
+        }
         var scale by remember { mutableFloatStateOf(1f) }
         var offset by remember { mutableStateOf(Offset.Zero) }
         var box by remember { mutableStateOf(IntSize.Zero) }
@@ -179,18 +190,10 @@ fun ImageViewer(turn: Turn, onDismiss: () -> Unit, onDelete: () -> Unit) {
                             .navigationBarsPadding()
                             .padding(start = 16.dp, end = 16.dp, top = 32.dp, bottom = 8.dp)
                     ) {
-                        Text(
-                            turn.prompt,
-                            color = Color.White.copy(alpha = 0.92f),
-                            fontSize = 14.sp,
-                            modifier = Modifier
-                                .heightIn(max = 140.dp)
-                                .verticalScroll(rememberScrollState())
-                        )
                         Row(
                             Modifier
                                 .fillMaxWidth()
-                                .padding(top = 8.dp),
+                                .padding(bottom = 4.dp),
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             ViewerAction("Сохранить", Color.White) {
@@ -211,6 +214,14 @@ fun ImageViewer(turn: Turn, onDismiss: () -> Unit, onDelete: () -> Unit) {
                             }
                             ViewerAction("Удалить", Color(0xFFFF8A80), onDelete)
                         }
+                        Text(
+                            turn.prompt,
+                            color = Color.White.copy(alpha = 0.92f),
+                            fontSize = 14.sp,
+                            modifier = Modifier
+                                .heightIn(max = 140.dp)
+                                .verticalScroll(rememberScrollState())
+                        )
                     }
                 }
             }
