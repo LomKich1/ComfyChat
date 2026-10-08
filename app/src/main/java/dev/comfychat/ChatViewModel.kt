@@ -47,7 +47,14 @@ class LoadedWorkflow(val id: String, val json: JsonObject, val spec: WorkflowSpe
 }
 
 /** Строка в списке выбора воркфлоу. */
-data class WorkflowItem(val id: String, val title: String, val note: String, val enabled: Boolean)
+data class WorkflowItem(
+    val id: String,
+    val title: String,
+    val note: String,
+    val enabled: Boolean,
+    val canHide: Boolean,
+    val canDelete: Boolean
+)
 
 class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private val settings = SettingsStore(app)
@@ -81,6 +88,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         private set
     var workflowItems by mutableStateOf<List<WorkflowItem>>(emptyList())
         private set
+    var hiddenItems by mutableStateOf<List<WorkflowItem>>(emptyList())
+        private set
+    private var hidden: Set<String> = emptySet()
     var wfBusy by mutableStateOf(false)
         private set
     var wfStatus by mutableStateOf<String?>(null)
@@ -100,6 +110,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         viewModelScope.launch {
+            hidden = settings.hiddenWorkflows.first()
             val id = settings.workflow.first()
             active = withContext(Dispatchers.IO) {
                 runCatching { loadWorkflow(id) }.getOrElse { loadWorkflow(WorkflowStore.BUILTIN) }
@@ -158,8 +169,18 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun rebuildItems() {
         val remote = remoteList
-        val items = mutableListOf<WorkflowItem>()
-        items += WorkflowItem(WorkflowStore.BUILTIN, WorkflowStore.title(WorkflowStore.BUILTIN), "в приложении", true)
+        val all = mutableListOf<WorkflowItem>()
+        fun add(id: String, note: String, enabled: Boolean = true) {
+            all += WorkflowItem(
+                id = id,
+                title = WorkflowStore.title(id),
+                note = note,
+                enabled = enabled,
+                canHide = id != WorkflowStore.BUILTIN,
+                canDelete = wfStore.exists(id)
+            )
+        }
+        add(WorkflowStore.BUILTIN, "в приложении")
         remote?.forEach { r ->
             val id = "pc:${r.name}"
             val cached = wfStore.hashOf(id)
@@ -169,18 +190,64 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 cached == r.hash -> "с ПК · актуальный"
                 else -> "с ПК · есть обновление"
             }
-            items += WorkflowItem(id, WorkflowStore.title(id), note, r.valid)
+            add(id, note, r.valid)
         }
         val remoteNames = remote?.map { it.name }?.toSet().orEmpty()
         wfStore.names("pc").filter { it !in remoteNames }.forEach { n ->
-            val id = "pc:$n"
-            items += WorkflowItem(id, WorkflowStore.title(id), if (remote == null) "с ПК · из кэша" else "с ПК · на ПК удалён", true)
+            add("pc:$n", if (remote == null) "с ПК · из кэша" else "с ПК · на ПК удалён")
         }
-        wfStore.names("local").forEach { n ->
-            val id = "local:$n"
-            items += WorkflowItem(id, WorkflowStore.title(id), "с телефона", true)
+        wfStore.names("local").forEach { n -> add("local:$n", "с телефона") }
+
+        val (hid, vis) = all.partition { it.id in hidden }
+        workflowItems = vis
+        hiddenItems = hid
+    }
+
+    /** Если убрали активный воркфлоу, возвращаемся на встроенный. */
+    private suspend fun fallbackIfActive(id: String) {
+        if (active?.id != id) return
+        active = withContext(Dispatchers.IO) { loadWorkflow(WorkflowStore.BUILTIN) }
+        settings.setWorkflow(WorkflowStore.BUILTIN)
+    }
+
+    fun hideWorkflow(item: WorkflowItem) {
+        if (!item.canHide) return
+        viewModelScope.launch {
+            hidden = hidden + item.id
+            settings.setHiddenWorkflows(hidden)
+            fallbackIfActive(item.id)
+            wfStatus = "«${item.title}» скрыт. Вернуть можно в разделе «Скрытые»"
+            rebuildItems()
         }
-        workflowItems = items
+    }
+
+    fun unhideWorkflow(item: WorkflowItem) {
+        viewModelScope.launch {
+            hidden = hidden - item.id
+            settings.setHiddenWorkflows(hidden)
+            wfStatus = null
+            rebuildItems()
+        }
+    }
+
+    /** Удаляет файл с телефона. Файлы на ПК не трогаем. */
+    fun deleteWorkflow(item: WorkflowItem) {
+        if (!item.canDelete) return
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { wfStore.delete(item.id) }
+            if (item.id.startsWith("local:") && item.id in hidden) {
+                hidden = hidden - item.id
+                settings.setHiddenWorkflows(hidden)
+            }
+            fallbackIfActive(item.id)
+            val stillOnPc = remoteList?.any { "pc:${it.name}" == item.id } == true
+            wfStatus = if (stillOnPc) {
+                "Удалил копию с телефона. На ПК файл остался: чтобы убрать из списка, скрой его"
+            } else {
+                "Удалил «${item.title}»"
+            }
+            rebuildItems()
+        }
     }
 
     /** Адрес, по которому ПК сейчас отвечает: дом, поиск в локалке, туннель. */

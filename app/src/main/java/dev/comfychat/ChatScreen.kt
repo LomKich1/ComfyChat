@@ -356,6 +356,10 @@ fun ChatScreen(vm: ChatViewModel) {
         ) {
             WorkflowPickerContent(
                 items = vm.workflowItems,
+                hiddenItems = vm.hiddenItems,
+                onHide = { vm.hideWorkflow(it) },
+                onUnhide = { vm.unhideWorkflow(it) },
+                onDelete = { vm.deleteWorkflow(it) },
                 selectedId = vm.active?.id.orEmpty(),
                 busy = vm.wfBusy,
                 status = vm.wfStatus,

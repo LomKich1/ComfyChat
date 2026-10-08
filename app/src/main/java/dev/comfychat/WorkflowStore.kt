@@ -38,6 +38,17 @@ class WorkflowStore(private val ctx: Context) {
         File(dir, safeName(id) ?: return).writeBytes(bytes)
     }
 
+    fun exists(id: String): Boolean {
+        val dir = dirOf(id) ?: return false
+        return File(dir, safeName(id) ?: return false).isFile
+    }
+
+    /** Удаляет только файл на телефоне (builtin не трогается). */
+    fun delete(id: String) {
+        val dir = dirOf(id) ?: return
+        File(dir, safeName(id) ?: return).delete()
+    }
+
     fun names(prefix: String): List<String> =
         (if (prefix == "pc") pcDir else localDir).listFiles { f -> f.isFile && f.name.endsWith(".json", true) }
             ?.map { it.name }?.sortedBy { it.lowercase() }.orEmpty()
