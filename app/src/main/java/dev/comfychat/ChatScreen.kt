@@ -40,8 +40,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
@@ -90,6 +94,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
@@ -101,6 +106,13 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.random.Random
+
+/** Насколько низ темнее фона (0 = цвет фона, 1 = чёрный) и его непрозрачность у самого края. */
+private const val SCRIM_DARKEN = 0.45f
+private const val SCRIM_ALPHA = 0.92f
+
+/** Высота плавного перехода под шапкой. */
+private val HEADER_FADE = 28.dp
 
 @Composable
 fun ChatScreen(vm: ChatViewModel) {
@@ -150,13 +162,67 @@ fun ChatScreen(vm: ChatViewModel) {
     }
 
     Box(Modifier.fillMaxSize().background(cs.background)) {
-        Column(
+        // Контент рисуется на весь экран (под статус-баром и панелью навигации):
+        // список лежит на всю высоту, шапка и пузырь ввода парят поверх него.
+        Box(
             Modifier
                 .fillMaxSize()
                 .graphicsLayer { translationX = shift * size.width * 0.12f }
-                .systemBarsPadding()
                 .imePadding()
         ) {
+            val density = LocalDensity.current
+            var headerPx by remember { mutableIntStateOf(0) }
+            var bottomPx by remember { mutableIntStateOf(0) }
+            val topPad = with(density) { headerPx.toDp() }
+            val bottomPad = with(density) { bottomPx.toDp() }
+            // низ чуть темнее фона: сильнее всего у панели навигации, плавно сходит на нет вверх
+            val scrimBottom = remember(cs.background) {
+                androidx.compose.ui.graphics.lerp(cs.background, Color.Black, SCRIM_DARKEN)
+                    .copy(alpha = SCRIM_ALPHA)
+            }
+
+            if (vm.turns.isEmpty()) {
+                Text(
+                    "Что нарисуем?",
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = cs.onSurfaceVariant,
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .padding(top = topPad, bottom = bottomPad)
+                )
+            } else {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(
+                        start = 16.dp,
+                        end = 16.dp,
+                        top = topPad + 8.dp,
+                        bottom = bottomPad + 8.dp
+                    ),
+                    verticalArrangement = Arrangement.spacedBy(24.dp)
+                ) {
+                    items(vm.turns, key = { it.id }) { t ->
+                        TurnItem(
+                            t,
+                            seen = vm.animated,
+                            onOpen = { viewingId = it },
+                            onRetry = vm::retry,
+                            onDelete = { confirmDeleteId = it }
+                        )
+                    }
+                }
+            }
+
+            // верх: шапка (фон доходит до верха экрана под статус-баром) и плавный переход цвета шапки вниз
+            Column(Modifier.align(Alignment.TopCenter).fillMaxWidth()) {
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .background(cs.background)
+                        .onSizeChanged { headerPx = it.height }
+                        .statusBarsPadding()
+                ) {
             Row(
                 Modifier
                     .fillMaxWidth()
@@ -192,33 +258,24 @@ fun ChatScreen(vm: ChatViewModel) {
                 }
             }
 
-            Box(Modifier.weight(1f).fillMaxWidth()) {
-                if (vm.turns.isEmpty()) {
-                    Text(
-                        "Что нарисуем?",
-                        style = MaterialTheme.typography.headlineSmall,
-                        color = cs.onSurfaceVariant,
-                        modifier = Modifier.align(Alignment.Center)
-                    )
-                } else {
-                    LazyColumn(
-                        state = listState,
-                        contentPadding = PaddingValues(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(24.dp)
-                    ) {
-                        items(vm.turns, key = { it.id }) { t ->
-                            TurnItem(
-                                t,
-                                seen = vm.animated,
-                                onOpen = { viewingId = it },
-                                onRetry = vm::retry,
-                                onDelete = { confirmDeleteId = it }
-                            )
-                        }
-                    }
                 }
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(HEADER_FADE)
+                        .background(Brush.verticalGradient(listOf(cs.background, Color.Transparent)))
+                )
             }
 
+            // низ: пузырь ввода без подложки, под ним градиент до панели навигации
+            Box(
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .onSizeChanged { bottomPx = it.height }
+                    .background(Brush.verticalGradient(listOf(Color.Transparent, scrimBottom)))
+                    .navigationBarsPadding()
+            ) {
             Surface(
                 modifier = Modifier.fillMaxWidth().padding(12.dp),
                 shape = RoundedCornerShape(24.dp),
@@ -296,6 +353,7 @@ fun ChatScreen(vm: ChatViewModel) {
                         }
                     }
                 }
+            }
             }
         }
 
